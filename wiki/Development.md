@@ -71,7 +71,7 @@ directory layout in a `tmp_path` and an in-memory SQLite DB; the TUI test feeds
 - **Schema is centralised and idempotent** in `app/cache/schema.py` — add DDL
   there, never inline in the repo.
 - **Record design decisions** as Markdown under `project/design/` (cross-project
-  convention). None exist yet — create that dir when you make a real decision.
+  convention). First one landed: `project/design/metadata-schema.md`.
 
 ## Gotchas
 
@@ -80,9 +80,10 @@ directory layout in a `tmp_path` and an in-memory SQLite DB; the TUI test feeds
   slips — confirm intent before treating either as canonical.
 - `.claude/settings.json` sets `worktree.bgIsolation: none`, so background
   sessions edit this checkout **in place** rather than in an isolated worktree.
-- The scanner records `metadata.json` / `config.json` **paths only** — their
-  contents aren't parsed yet, so `projectVersion` / `branchVersion` / `cycle`
-  stay `None` until that layer is built.
+- The scanner **parses `metadata.json`** (`name`/`version`/`branchVersion`/`cycle`)
+  but records `config.json` by **path only** — `config.json` is reserved for
+  registry config and isn't parsed yet. Schema + rules:
+  `project/design/metadata-schema.md`.
 - `uv run main.py` writes real rows to `~/.config/dev-reg/registry.db`; the
   **tests** never do — they use temp dirs + in-memory DBs (see Testing above).
 

@@ -12,6 +12,7 @@ and a single read of ``.git/HEAD``. No subprocesses, no writes to the scanned
 trees.
 """
 
+import json
 from pathlib import Path
 
 from app.data_models.watched_dirs import WatchlistItem
@@ -54,8 +55,11 @@ class Scanner:
 
         Fills what can be read straight off disk: the ``.git`` marker (and, for a
         normal checkout, the current branch), and the presence of
-        ``metadata.json`` / ``config.json``. Their *contents* are not parsed yet —
-        only their paths are recorded, so an empty or malformed file is harmless.
+        ``metadata.json`` / ``config.json``. ``metadata.json``'s *contents* are
+        parsed into the descriptive fields (see :meth:`apply_metadata`);
+        ``config.json`` is recorded by path only (reserved for registry config).
+        A missing/empty/malformed metadata file is harmless — the fields simply
+        stay ``None``.
         """
         item = WatchlistItem()
         item.path = str(path)
@@ -72,12 +76,59 @@ class Scanner:
         metadata = path / "metadata.json"
         if metadata.is_file():
             item.metadatapath = str(metadata)
+            self.apply_metadata(item, metadata)
 
         config = path / "config.json"
         if config.is_file():
             item.configpath = str(config)
 
         return item
+
+    # metadata.json keys -> WatchlistItem attributes. Only these keys are read;
+    # anything else in the file is ignored. See project/design/metadata-schema.md.
+    METADATA_FIELDS = {
+        "name": "projectName",
+        "version": "projectVersion",
+        "branchVersion": "branchVersion",
+        "cycle": "cycle",
+    }
+
+    def apply_metadata(self, item: WatchlistItem, metadata_path: Path) -> None:
+        """Fill descriptive fields on ``item`` from ``metadata.json``.
+
+        Best-effort and defensive: a missing/unreadable/malformed file, a JSON
+        top level that isn't an object, or a key whose value isn't a scalar all
+        leave the corresponding field untouched (``None``) rather than raising —
+        indexing must never fail because one project ships a bad metadata file.
+        Scalar values are coerced to ``str`` to match the TEXT columns. A present
+        ``name`` overrides the directory-name default set in :meth:`describe`.
+        """
+        data = self.read_json(metadata_path)
+        if not isinstance(data, dict):
+            return
+        for key, attr in self.METADATA_FIELDS.items():
+            value = data.get(key)
+            # bool is an int subclass, but a boolean version/cycle is meaningless.
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (str, int, float)):
+                setattr(item, attr, str(value))
+
+    @staticmethod
+    def read_json(path: Path):
+        """Parse a JSON file, or return ``None`` if it can't be read or parsed.
+
+        Empty files and invalid JSON both yield ``None`` (never an exception), so
+        callers can treat "no usable data" uniformly.
+        """
+        try:
+            text = path.read_text()
+        except OSError:
+            return None
+        try:
+            return json.loads(text)
+        except ValueError:  # json.JSONDecodeError is a subclass
+            return None
 
     @staticmethod
     def current_branch(git_dir: Path) -> str | None:

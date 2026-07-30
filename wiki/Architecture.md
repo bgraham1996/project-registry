@@ -81,9 +81,15 @@ single read of `.git/HEAD`, no subprocesses and no writes to the scanned trees:
 - **Git detection** reads the branch straight from `.git/HEAD` (`ref: refs/heads/…`),
   returning `None` for a detached HEAD or a `.git` file pointing at a worktree
   (not followed yet). `dirType` is `"git"` or `"dir"`.
-- **Metadata/config** presence is recorded as *paths only* — `metadata.json` /
-  `config.json` are noted if present but **not yet parsed**, so an empty or
-  malformed file is harmless (this is the next roadmap item).
+- **`metadata.json` is parsed** into the descriptive fields — `name` (overrides
+  the directory-name default), `version` → `projectVersion`, `branchVersion`,
+  and `cycle`. Parsing is best-effort: a missing/empty/malformed file, a non-object
+  top level, or a non-scalar value leaves the field `None` rather than raising, so
+  a bad metadata file never breaks a scan. Scalars are coerced to `str` (TEXT
+  columns). Schema and rules: `project/design/metadata-schema.md`.
+- **`config.json` is recorded by path only** — reserved for registry/tooling
+  config and **not parsed** into descriptive fields yet (avoids an ambiguous
+  metadata-vs-config precedence question before there's a consumer).
 
 ## The `app` package as one library
 

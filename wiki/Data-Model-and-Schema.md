@@ -20,6 +20,11 @@ tracked project directory. Attributes are **camelCase**; a fresh instance gets a
 | `cycle` | Project cycle/stage marker. |
 | `dirType` | e.g. `"git"` or `"dir"`. |
 
+`projectName`, `projectVersion`, `branchVersion`, and `cycle` are populated by the
+scanner from the project's `metadata.json` (`branchName`/`dirType`/`gitpath` come
+from git; `path`/`*path` from the filesystem). See
+`project/design/metadata-schema.md` for the metadata schema and parsing rules.
+
 ### Row mapping
 
 The model owns the translation between attributes and columns:

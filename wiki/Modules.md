@@ -52,7 +52,7 @@ File-by-file reference. Legend: **✅ working** · 🟡 skeleton · ⬜ empty st
 
 | File | State | Notes |
 |------|-------|-------|
-| `scanner.py` | ✅ | `Scanner(repo, roots)`: the registry's only writer. `scan()` → for each root's immediate subdirs, `describe()` builds a `WatchlistItem` from on-disk signals and `upsert`s it (idempotent on `path`); returns the stored items. `candidates()` skips missing roots and hidden `.dotdirs`. `describe()` detects `.git` + `current_branch()` (read from `.git/HEAD`, no subprocess) and notes `metadata.json` / `config.json` paths (contents not parsed yet). Fenced to `scan_roots` — never the whole filesystem. |
+| `scanner.py` | ✅ | `Scanner(repo, roots)`: the registry's only writer. `scan()` → for each root's immediate subdirs, `describe()` builds a `WatchlistItem` from on-disk signals and `upsert`s it (idempotent on `path`); returns the stored items. `candidates()` skips missing roots and hidden `.dotdirs`. `describe()` detects `.git` + `current_branch()` (read from `.git/HEAD`, no subprocess), records `config.json` by path, and **parses `metadata.json`** via `apply_metadata()` → `read_json()` into `projectName`/`projectVersion`/`branchVersion`/`cycle` (best-effort: bad/empty/malformed files leave fields `None`, never raise). `METADATA_FIELDS` maps JSON keys → attrs. Fenced to `scan_roots` — never the whole filesystem. See `project/design/metadata-schema.md`. |
 
 ## `app/ux/`
 
@@ -82,5 +82,7 @@ These exist as directories/files with no implementation yet:
 ## `regProject/`
 
 A sample "registered project" — the kind of thing the registry is meant to
-index. `config.json`, `metadata.json`, and `main.py` are all present but
-**empty**; they are fixtures/targets, not runnable code.
+index, and the worked example for the metadata schema. `metadata.json` now
+carries real fields (`name`/`version`/`branchVersion`/`cycle`) the scanner parses;
+`config.json` carries an example registry config (recorded by path, not parsed);
+`main.py` is an empty presence marker. Fixtures/targets, not runnable code.

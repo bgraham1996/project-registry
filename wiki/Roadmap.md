@@ -19,12 +19,17 @@ commitment — a reading of where the scaffold is pointed.
   and `upsert`s each `WatchlistItem`. Idempotent on re-scan.
 - ✅ Test runner configured (`pytest`, `pythonpath=["."]`); scanner detection is
   pinned by `tests/test_scanner.py` (temp dir + in-memory DB, never the real tree).
+- ✅ **Parse `metadata.json`** in the scanner to fill the descriptive fields
+  (`projectName` override, `projectVersion`, `branchVersion`, `cycle`) —
+  best-effort, bad/empty/malformed files leave fields `None` without raising.
+  Schema + rules recorded in `project/design/metadata-schema.md`; worked example
+  in `regProject/metadata.json`; pinned by `tests/test_scanner.py`.
 
 ## Next — fill the empty layers
 
-- ⬜ **Parse `metadata.json` / `config.json`** in the scanner to fill the richer
-  fields (`projectVersion`, `branchVersion`, `cycle`) — only the *paths* are
-  recorded today, not the contents.
+- ⬜ **Parse `config.json`** in the scanner — reserved for registry/tooling config
+  and recorded by *path only* today. Define its schema (a follow-up design doc)
+  and a consumer before parsing it.
 - ⬜ **API surface** (`app/api/`): the local, predefined queries the clients
   call — the "access/control point" the README describes.
 - ⬜ **Richer models** (`app/data_models/projects.py`,
@@ -47,7 +52,8 @@ commitment — a reading of where the scaffold is pointed.
 - ⬜ Decide whether `fig()` / `cnfg.py` names stay or get normalised.
 - ✅ Add a test runner (`uv add --dev pytest`) once there's behaviour worth
   pinning.
-- ⬜ Create `project/design/` and record architecture decisions as they're made.
-- ⬜ Fill in the `regProject/` fixture files (`config.json`, `metadata.json`) so
+- ✅ Create `project/design/` and record architecture decisions as they're made
+  (first: `metadata-schema.md`).
+- ✅ Fill in the `regProject/` fixture files (`config.json`, `metadata.json`) so
   the scanner has a realistic target to index.
-- ⬜ First commit — the repo has no commits yet.
+- ✅ First commit — initial commit landed on `main` (local only, no remote yet).

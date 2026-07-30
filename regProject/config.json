@@ -1,0 +1,5 @@
+{
+  "track": true,
+  "tags": ["example", "fixture"],
+  "notes": "Sample registered project used as a scanner target/example. config.json is reserved for registry/tooling settings and is recorded by path only (not yet parsed)."
+}
