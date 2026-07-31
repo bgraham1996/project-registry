@@ -31,6 +31,8 @@ SCHEMA = [
         branch_version  TEXT,
         cycle           TEXT,
         dir_type        TEXT,
+        tags            TEXT,
+        notes           TEXT,
         created_at      TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
     )
@@ -65,4 +67,15 @@ SCHEMA = [
         GROUP BY cycle
         ORDER BY n DESC, cycle IS NULL, cycle
     """,
+]
+
+# Additive migrations for databases created before a column existed. A fresh DB
+# gets these columns straight from the CREATE TABLE above; an *existing* DB needs
+# them added. SQLite has no `ADD COLUMN IF NOT EXISTS`, so each statement is
+# applied defensively (a "duplicate column name" error just means it already ran
+# — see ``Db._migrate``). Only additive column changes belong here; changing a
+# view or table body still needs a real migration story.
+MIGRATIONS = [
+    "ALTER TABLE watched_dirs ADD COLUMN tags TEXT",
+    "ALTER TABLE watched_dirs ADD COLUMN notes TEXT",
 ]

@@ -123,17 +123,85 @@ def test_non_object_and_nonscalar_metadata_are_ignored(tmp_path):
     assert item.projectVersion is None  # non-scalar value skipped
 
 
-def test_config_json_recorded_but_not_parsed(tmp_path):
+def test_config_json_does_not_supply_metadata_fields(tmp_path):
     project = tmp_path / "theta"
     project.mkdir()
-    # config.json carries fields that look descriptive; they must NOT be applied.
+    # config.json carries keys that belong to metadata.json; they must NOT bleed
+    # into the descriptive fields — config.json only supplies tags/notes/track.
     (project / "config.json").write_text(json.dumps({"version": "9.9.9", "cycle": "prod"}))
 
     item = Scanner(repo=None, roots=[]).describe(project)
 
     assert item.configpath == str(project / "config.json")
-    assert item.projectVersion is None  # config.json is reserved, not parsed
+    assert item.projectVersion is None  # version comes from metadata.json only
     assert item.cycle is None
+
+
+def test_config_json_parses_tags_and_notes(tmp_path):
+    project = tmp_path / "theta"
+    project.mkdir()
+    (project / "config.json").write_text(
+        json.dumps({"track": True, "tags": ["example", "fixture"], "notes": "a note"})
+    )
+
+    item = Scanner(repo=None, roots=[]).describe(project)
+
+    assert item.tags == ["example", "fixture"]
+    assert item.notes == "a note"
+
+
+def test_config_tags_keep_only_scalars_coerced_to_str(tmp_path):
+    project = tmp_path / "iota"
+    project.mkdir()
+    # mixed list: ints coerce to str, bool/objects/lists dropped.
+    (project / "config.json").write_text(
+        json.dumps({"tags": ["a", 2, True, {"x": 1}, ["nested"]]})
+    )
+
+    item = Scanner(repo=None, roots=[]).describe(project)
+
+    assert item.tags == ["a", "2"]
+
+
+def test_config_absent_or_malformed_leaves_tags_notes_none(tmp_path):
+    plain = tmp_path / "kappa"
+    plain.mkdir()
+    assert Scanner(repo=None, roots=[]).describe(plain).tags is None
+
+    bad = tmp_path / "lambda"
+    bad.mkdir()
+    (bad / "config.json").write_text("{ not json ]")
+    item = Scanner(repo=None, roots=[]).describe(bad)
+    assert item.configpath == str(bad / "config.json")  # path still recorded
+    assert item.tags is None and item.notes is None
+
+
+def test_is_tracked_defaults_true_and_only_false_opts_out(tmp_path):
+    scanner = Scanner(repo=None, roots=[])
+
+    no_config = tmp_path / "n1"
+    no_config.mkdir()
+    assert scanner.is_tracked(no_config) is True  # no config.json -> tracked
+
+    tracked = tmp_path / "n2"
+    tracked.mkdir()
+    (tracked / "config.json").write_text(json.dumps({"track": True}))
+    assert scanner.is_tracked(tracked) is True
+
+    absent_key = tmp_path / "n3"
+    absent_key.mkdir()
+    (absent_key / "config.json").write_text(json.dumps({"tags": ["x"]}))
+    assert scanner.is_tracked(absent_key) is True  # track key absent -> tracked
+
+    untracked = tmp_path / "n4"
+    untracked.mkdir()
+    (untracked / "config.json").write_text(json.dumps({"track": False}))
+    assert scanner.is_tracked(untracked) is False
+
+    malformed = tmp_path / "n5"
+    malformed.mkdir()
+    (malformed / "config.json").write_text("{ not json ]")
+    assert scanner.is_tracked(malformed) is True  # bad file never hides a project
 
 
 def test_describe_plain_dir_has_no_git_fields(tmp_path):
@@ -187,3 +255,22 @@ def test_scan_upserts_all_candidates_and_is_idempotent(repo, tmp_path):
 
     scanner.scan()  # re-scan must refresh in place, not duplicate
     assert len(repo.all()) == 2
+
+
+def test_scan_skips_untracked_and_prunes_on_flip(repo, tmp_path):
+    make_git_project(tmp_path, "keep")
+    optout = tmp_path / "optout"
+    optout.mkdir()
+
+    scanner = Scanner(repo=repo, roots=[tmp_path])
+
+    # First scan: optout has no config yet, so both are indexed.
+    scanner.scan()
+    assert {i.projectName for i in repo.all()} == {"keep", "optout"}
+
+    # optout later opts out; a re-scan must drop its existing row (prune),
+    # leaving "untracked" == "absent from the registry".
+    (optout / "config.json").write_text(json.dumps({"track": False}))
+    stored = scanner.scan()
+    assert {i.projectName for i in stored} == {"keep"}
+    assert {i.projectName for i in repo.all()} == {"keep"}

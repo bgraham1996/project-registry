@@ -71,3 +71,16 @@ class WatchlistRepo:
             "SELECT * FROM watched_dirs ORDER BY path"
         ).fetchall()
         return [WatchlistItem.from_row(r) for r in rows]
+
+    def delete_by_path(self, path: str) -> bool:
+        """Remove the row at ``path`` if present; returns whether a row was deleted.
+
+        Used by the scanner to prune a directory that has opted out of tracking
+        (``config.json`` ``"track": false``) since it was last indexed, so
+        "untracked" means "absent from the registry" even after a flip.
+        """
+        cur = self.connection.execute(
+            "DELETE FROM watched_dirs WHERE path = ?", (path,)
+        )
+        self.connection.commit()
+        return cur.rowcount > 0

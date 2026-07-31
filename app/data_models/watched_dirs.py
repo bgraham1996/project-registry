@@ -1,5 +1,6 @@
 
 
+import json
 from uuid import uuid4
 
 
@@ -11,13 +12,18 @@ class WatchlistItem:
         self.configpath = None
         self.gitpath = None
 
-        # basic metadata:
+        # basic metadata (from metadata.json):
         self.projectName = None
         self.projectVersion = None
         self.branchName = None
         self.branchVersion = None
         self.cycle = None
         self.dirType = None
+
+        # registry config (from config.json): tags is a list in memory,
+        # stored JSON-encoded in the TEXT column; notes is a plain string.
+        self.tags = None
+        self.notes = None
 
     def init(self):
         return True
@@ -39,6 +45,9 @@ class WatchlistItem:
             "branch_version": self.branchVersion,
             "cycle": self.cycle,
             "dir_type": self.dirType,
+            # tags is a list -> JSON text; None stays NULL (distinct from "[]")
+            "tags": json.dumps(self.tags) if self.tags is not None else None,
+            "notes": self.notes,
         }
 
     @classmethod
@@ -56,4 +65,7 @@ class WatchlistItem:
         item.branchVersion = row["branch_version"]
         item.cycle = row["cycle"]
         item.dirType = row["dir_type"]
+        tags = row["tags"]
+        item.tags = json.loads(tags) if tags is not None else None
+        item.notes = row["notes"]
         return item

@@ -2,7 +2,7 @@ import sqlite3
 from pathlib import Path
 
 from app.config_service.cnfg import Configure
-from app.cache.schema import SCHEMA
+from app.cache.schema import MIGRATIONS, SCHEMA
 
 
 class Db:
@@ -30,12 +30,28 @@ class Db:
         self.connection = sqlite3.connect(path)
         self.connection.row_factory = sqlite3.Row
         self.create_tables()
+        self._migrate()
         return existed  # True: opened existing, False: created new
 
     def create_tables(self):
         cur = self.connection.cursor()
         for ddl in SCHEMA:
             cur.execute(ddl)
+        self.connection.commit()
+
+    def _migrate(self):
+        """Apply additive column migrations, tolerating ones already present.
+
+        SQLite lacks ``ADD COLUMN IF NOT EXISTS``, so a "duplicate column name"
+        error just means the column is already there (a fresh DB gets it from the
+        CREATE TABLE); any other error is a real problem and re-raised.
+        """
+        for stmt in MIGRATIONS:
+            try:
+                self.connection.execute(stmt)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
         self.connection.commit()
 
     def close(self):

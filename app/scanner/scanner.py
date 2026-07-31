@@ -28,9 +28,18 @@ class Scanner:
         self.roots = [Path(root).expanduser() for root in roots]
 
     def scan(self) -> list[WatchlistItem]:
-        """Describe and ``upsert`` every candidate project. Returns the items stored."""
+        """Describe and store every *tracked* candidate. Returns the items stored.
+
+        A candidate whose ``config.json`` sets ``"track": false`` is skipped and,
+        if it was indexed on a previous run, pruned — so opting out of tracking
+        means "absent from the registry", even after a project flips the flag.
+        Everything else is ``upsert``ed (idempotent on ``path``).
+        """
         items = []
         for candidate in self.candidates():
+            if not self.is_tracked(candidate):
+                self.repo.delete_by_path(str(candidate))
+                continue
             item = self.describe(candidate)
             self.repo.upsert(item)
             items.append(item)
@@ -55,11 +64,12 @@ class Scanner:
 
         Fills what can be read straight off disk: the ``.git`` marker (and, for a
         normal checkout, the current branch), and the presence of
-        ``metadata.json`` / ``config.json``. ``metadata.json``'s *contents* are
-        parsed into the descriptive fields (see :meth:`apply_metadata`);
-        ``config.json`` is recorded by path only (reserved for registry config).
-        A missing/empty/malformed metadata file is harmless — the fields simply
-        stay ``None``.
+        ``metadata.json`` / ``config.json``. Both files' *contents* are parsed —
+        ``metadata.json`` into the descriptive fields (see :meth:`apply_metadata`)
+        and ``config.json`` into the registry-config fields ``tags`` / ``notes``
+        (see :meth:`apply_config`); the ``track`` flag is handled separately in
+        :meth:`scan` via :meth:`is_tracked`. A missing/empty/malformed file of
+        either kind is harmless — the corresponding fields simply stay ``None``.
         """
         item = WatchlistItem()
         item.path = str(path)
@@ -81,6 +91,7 @@ class Scanner:
         config = path / "config.json"
         if config.is_file():
             item.configpath = str(config)
+            self.apply_config(item, config)
 
         return item
 
@@ -113,6 +124,50 @@ class Scanner:
                 continue
             if isinstance(value, (str, int, float)):
                 setattr(item, attr, str(value))
+
+    def apply_config(self, item: WatchlistItem, config_path: Path) -> None:
+        """Fill registry-config fields on ``item`` from ``config.json``.
+
+        Reads only ``tags`` (a list of scalars -> list of ``str``) and ``notes``
+        (a string). The ``track`` flag is *not* applied to the item — it gates
+        whether the item is stored at all, handled in :meth:`scan` /
+        :meth:`is_tracked`. Same defensive stance as :meth:`apply_metadata`: a
+        missing/unreadable/malformed file or a non-object top level leaves the
+        fields untouched (``None``) rather than raising, and values of the wrong
+        JSON type are skipped. See ``project/design/config-schema.md``.
+        """
+        data = self.read_json(config_path)
+        if not isinstance(data, dict):
+            return
+        tags = data.get("tags")
+        if isinstance(tags, list):
+            # keep only scalar tags, coerced to str; bool is an int subclass but
+            # a boolean tag is meaningless, so drop it.
+            item.tags = [
+                str(t)
+                for t in tags
+                if isinstance(t, (str, int, float)) and not isinstance(t, bool)
+            ]
+        notes = data.get("notes")
+        if isinstance(notes, str):
+            item.notes = notes
+
+    def is_tracked(self, path: Path) -> bool:
+        """Whether ``path`` should be indexed, per its ``config.json`` ``track`` flag.
+
+        Tracked by default: a directory is only *excluded* when its
+        ``config.json`` exists, parses as an object, and sets ``track`` to the
+        JSON literal ``false``. A missing/malformed config, or ``track`` absent or
+        set to anything other than boolean ``false``, keeps the directory tracked
+        — the registry never silently drops a project because of a bad file.
+        """
+        config = path / "config.json"
+        if not config.is_file():
+            return True
+        data = self.read_json(config)
+        if not isinstance(data, dict):
+            return True
+        return data.get("track") is not False
 
     @staticmethod
     def read_json(path: Path):
