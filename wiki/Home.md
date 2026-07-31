@@ -15,13 +15,16 @@ Go** — both reading the local SQLite file.
 
 ## Maturity
 
-**Early scaffold, first vertical slice working end-to-end.** `uv run main.py`
-creates-or-opens the SQLite database, applies the schema, **scans the configured
-roots** (`~/dev` by default), upserts a `WatchlistItem` for each project found,
-and prints all watched dirs. A read-only `rich` TUI (`app/ux/tui.py`) views the
-result. The scanner and TUI are pinned by a small `pytest` suite. The still-empty
-layers are the API surface (`app/api/`), the richer models (`projects.py`,
-`session_manager.py`), and the two planned clients.
+**Working end-to-end, both clients live.** `uv run main.py` creates-or-opens the
+SQLite database, applies the schema (tables **+ read views**), **scans the
+configured roots** (`~/dev` by default), upserts a `WatchlistItem` for each
+*tracked* project found, and prints all watched dirs. Reads go through a
+predefined **query API** (`app/api/registry.py`) over shared SQL views; two
+clients consume it — a read-only `rich` TUI (`app/ux/tui.py`) and a **Go CLI**
+(`clients/go/`). Scanner, TUI, and query API are pinned by a `pytest` suite. The
+still-empty layers (`app/data_models/projects.py`, `session_manager.py`,
+`app/main.py`, `libs/`) are **intentional roadmap placeholders**, not oversights
+— leave them in place.
 
 ## Wiki pages
 
@@ -36,13 +39,15 @@ layers are the API surface (`app/api/`), the richer models (`projects.py`,
 
 | Aspect | State |
 |--------|-------|
-| Language / tooling | Python 3.13, managed with `uv` |
-| Dependencies | `rich` (runtime, for the TUI); DB layer uses stdlib `sqlite3` |
+| Language / tooling | Python 3.13, managed with `uv`; Go 1.25 for the Go client |
+| Dependencies | `rich` (runtime, for the TUI); DB layer uses stdlib `sqlite3`. Go client: `modernc.org/sqlite` (pure-Go, no cgo) |
 | Database | SQLite at `~/.config/dev-reg/registry.db` |
 | Working entry point | `uv run main.py` (scan + list) |
-| Scanner | `app/scanner/` — indexes projects under configured `scan_roots` |
+| Scanner | `app/scanner/` — indexes *tracked* projects under configured `scan_roots` |
+| Read API | `app/api/registry.py` — read-only `Registry` over shared `v_*` views |
 | TUI (read-only view) | `uv run python -m app.ux.tui` (`--watch` to live-refresh) |
-| Tables | `watched_dirs` (+ index on `project_name`) |
-| Clients | Planned: Python + Go (neither built yet) |
-| Tests | `pytest` configured — scanner + TUI covered (`tests/`) |
-| Git | Independent repo, **no commits yet** (branch `master`; `main` intended for PRs) |
+| Go client | `clients/go/` — read-only CLI over the same views (`-git` / `-json` / `-db`) |
+| Tables / views | `watched_dirs` (+ index) and read views `v_projects` / `v_git_projects` / `v_cycle_counts` |
+| Clients | Python (`Registry` + TUI) ✅ and Go CLI ✅ |
+| Tests | `pytest` — scanner + TUI + query API covered (`tests/`) |
+| Git | Independent repo; commits on `master` (local only, no remote). `main` intended for PRs |
