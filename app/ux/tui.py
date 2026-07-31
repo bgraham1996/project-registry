@@ -1,8 +1,9 @@
 """Placeholder TUI: a read-only ``rich`` view of the registry.
 
 This is a *client* in the README's sense — it only ever reads the SQLite DB
-(through :class:`WatchlistRepo`); it never scans or writes. Populating the
-registry is the scanner's job (``uv run main.py``). Run the view with:
+(through the read-only :class:`Registry` query API); it never scans or writes.
+Populating the registry is the scanner's job (``uv run main.py``). Run the view
+with:
 
     uv run python -m app.ux.tui            # render once and exit
     uv run python -m app.ux.tui --watch    # live-refresh from the DB until Ctrl-C
@@ -18,8 +19,8 @@ from rich.console import Console
 from rich.live import Live
 from rich.table import Table
 
+from app.api.registry import Registry
 from app.cache.cache_manager import Db
-from app.cache.watchlist_repo import WatchlistRepo
 
 
 def render_table(items) -> Table:
@@ -52,7 +53,7 @@ def _load_items():
     db = Db()
     db.init()
     try:
-        return WatchlistRepo(db.connection).all()
+        return Registry(db.connection).projects()
     finally:
         db.close()
 
