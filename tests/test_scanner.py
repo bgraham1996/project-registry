@@ -204,6 +204,122 @@ def test_is_tracked_defaults_true_and_only_false_opts_out(tmp_path):
     assert scanner.is_tracked(malformed) is True  # bad file never hides a project
 
 
+def test_locate_finds_nested_config_and_metadata(tmp_path):
+    project = tmp_path / "nested"
+    (project / "project").mkdir(parents=True)
+    (project / "project" / "config.json").write_text(json.dumps({"notes": "deep"}))
+    (project / "project" / "metadata.json").write_text(json.dumps({"version": "3.0"}))
+
+    item = Scanner(repo=None, roots=[]).describe(project)
+
+    # highest-level occurrence is one level down; both are picked up there
+    assert item.configpath == str(project / "project" / "config.json")
+    assert item.metadatapath == str(project / "project" / "metadata.json")
+    assert item.notes == "deep"
+    assert item.projectVersion == "3.0"
+
+
+def test_locate_prefers_shallowest_config(tmp_path):
+    project = tmp_path / "shallow"
+    (project / "sub").mkdir(parents=True)
+    # a root-level config must win over a deeper one
+    (project / "config.json").write_text(json.dumps({"notes": "root"}))
+    (project / "sub" / "config.json").write_text(json.dumps({"notes": "deeper"}))
+
+    item = Scanner(repo=None, roots=[]).describe(project)
+
+    assert item.configpath == str(project / "config.json")
+    assert item.notes == "root"
+
+
+def test_locate_finds_files_at_independent_depths(tmp_path):
+    project = tmp_path / "mixed"
+    (project / "a" / "b").mkdir(parents=True)
+    (project / "config.json").write_text(json.dumps({"notes": "cfg at root"}))
+    (project / "a" / "b" / "metadata.json").write_text(json.dumps({"version": "1.1"}))
+
+    found = Scanner(repo=None, roots=[]).locate(project)
+
+    assert found["config.json"] == project / "config.json"
+    assert found["metadata.json"] == project / "a" / "b" / "metadata.json"
+
+
+def test_locate_ties_break_on_sorted_order(tmp_path):
+    project = tmp_path / "ties"
+    (project / "alpha").mkdir(parents=True)
+    (project / "beta").mkdir(parents=True)
+    # two configs at the same depth: sorted dir order makes 'alpha' win
+    (project / "beta" / "config.json").write_text(json.dumps({"notes": "beta"}))
+    (project / "alpha" / "config.json").write_text(json.dumps({"notes": "alpha"}))
+
+    found = Scanner(repo=None, roots=[]).locate(project)
+
+    assert found["config.json"] == project / "alpha" / "config.json"
+
+
+def test_locate_does_not_descend_into_vendor_dirs(tmp_path):
+    project = tmp_path / "withvendor"
+    (project / "node_modules" / "pkg").mkdir(parents=True)
+    # a config buried in node_modules must NOT be treated as the project's own
+    (project / "node_modules" / "pkg" / "config.json").write_text(
+        json.dumps({"notes": "vendored"})
+    )
+
+    found = Scanner(repo=None, roots=[]).locate(project)
+
+    assert "config.json" not in found
+
+
+def test_locate_does_not_descend_into_hidden_dirs(tmp_path):
+    project = tmp_path / "withhidden"
+    (project / ".git").mkdir(parents=True)
+    (project / ".git" / "config.json").write_text(json.dumps({"notes": "in .git"}))
+
+    found = Scanner(repo=None, roots=[]).locate(project)
+
+    assert "config.json" not in found
+
+
+def test_locate_respects_max_scan_depth(tmp_path):
+    scanner = Scanner(repo=None, roots=[])
+    project = tmp_path / "toodeep"
+    # bury a config one level *beyond* the depth cap; it must not be found
+    deep = project
+    for i in range(scanner.MAX_SCAN_DEPTH + 1):
+        deep = deep / f"d{i}"
+    deep.mkdir(parents=True)
+    (deep / "config.json").write_text(json.dumps({"notes": "unreachable"}))
+
+    found = scanner.locate(project)
+
+    assert "config.json" not in found
+
+
+def test_is_tracked_honors_nested_config(tmp_path):
+    scanner = Scanner(repo=None, roots=[])
+    project = tmp_path / "nested_optout"
+    (project / "project").mkdir(parents=True)
+    (project / "project" / "config.json").write_text(json.dumps({"track": False}))
+
+    assert scanner.is_tracked(project) is False
+
+
+def test_scan_indexes_and_prunes_via_nested_config(repo, tmp_path):
+    # a project whose only config.json lives one level down, opting out
+    make_git_project(tmp_path, "keep")
+    optout = tmp_path / "optout"
+    (optout / "project").mkdir(parents=True)
+
+    scanner = Scanner(repo=repo, roots=[tmp_path])
+
+    scanner.scan()  # no config yet -> both indexed
+    assert {i.projectName for i in repo.all()} == {"keep", "optout"}
+
+    (optout / "project" / "config.json").write_text(json.dumps({"track": False}))
+    scanner.scan()  # nested opt-out must prune the existing row
+    assert {i.projectName for i in repo.all()} == {"keep"}
+
+
 def test_describe_plain_dir_has_no_git_fields(tmp_path):
     project = tmp_path / "beta"
     project.mkdir()

@@ -7,15 +7,22 @@ as a candidate project, described as a :class:`WatchlistItem` from on-disk
 signals only, and ``upsert``ed into the registry (idempotent on ``path``, so a
 re-scan just refreshes each row rather than duplicating it).
 
-Detection is intentionally cheap and side-effect free — directory ``stat`` calls
-and a single read of ``.git/HEAD``. No subprocesses, no writes to the scanned
-trees.
+Detection is intentionally cheap and side-effect free — a bounded breadth-first
+walk of each candidate (skipping hidden and vendored/build dirs) to find the
+highest-level ``metadata.json`` / ``config.json``, plus a single read of
+``.git/HEAD``. No subprocesses, no writes to the scanned trees.
 """
 
 import json
+from collections import deque
 from pathlib import Path
 
 from app.data_models.watched_dirs import WatchlistItem
+
+# Sentinel for describe(): distinguishes "argument not passed" (locate it) from
+# an explicit None ("searched, not found") passed by scan(), which must not
+# trigger a second walk of the same tree.
+_UNSET = object()
 
 
 class Scanner:
@@ -37,10 +44,18 @@ class Scanner:
         """
         items = []
         for candidate in self.candidates():
-            if not self.is_tracked(candidate):
+            # One walk per candidate: locate here, then reuse the found paths for
+            # both the track gate and describe() so the tree isn't walked twice.
+            found = self.locate(candidate)
+            config_path = found.get("config.json")
+            if not self._is_tracked_config(config_path):
                 self.repo.delete_by_path(str(candidate))
                 continue
-            item = self.describe(candidate)
+            item = self.describe(
+                candidate,
+                config_path=config_path,
+                metadata_path=found.get("metadata.json"),
+            )
             self.repo.upsert(item)
             items.append(item)
         return items
@@ -59,18 +74,84 @@ class Scanner:
                 if child.is_dir() and not child.name.startswith("."):
                     yield child
 
-    def describe(self, path: Path) -> WatchlistItem:
+    # Files the scanner hunts for inside each candidate, and how far it descends.
+    # See project/design/file-discovery.md.
+    TARGET_FILES = ("config.json", "metadata.json")
+    MAX_SCAN_DEPTH = 4  # candidate root is depth 0
+    # Never descended when hunting for a project's *top-level* files: hidden dirs
+    # are tooling/state, the rest are vendored/build output a project's own
+    # config/metadata would never live inside. (Dot-prefixed dirs are also caught
+    # by the startswith('.') check below; .venv is listed here for explicitness.)
+    SKIP_DIRS = frozenset({
+        "node_modules", "__pycache__", "dist", "build",
+        "target", "site-packages", "venv", ".venv",
+    })
+
+    def locate(self, root: Path) -> dict[str, Path]:
+        """Find the shallowest ``config.json`` / ``metadata.json`` under ``root``.
+
+        Breadth-first from the project root, so the *highest-level* occurrence of
+        each target file wins; ties at the same depth break on sorted directory
+        order (deterministic). The two files are searched **independently** — they
+        may live at different depths. Hidden dirs and vendored/build dirs
+        (:data:`SKIP_DIRS`) are never descended, and the walk is bounded to
+        :data:`MAX_SCAN_DEPTH`, so a project that lacks the files costs a small
+        bounded traversal rather than a full walk into ``node_modules`` /
+        ``site-packages``. Returns a dict mapping each found filename to its
+        ``Path``; a file that is never found is simply absent from the dict.
+        """
+        remaining = set(self.TARGET_FILES)
+        found: dict[str, Path] = {}
+        queue = deque([(root, 0)])
+        while queue and remaining:
+            current, depth = queue.popleft()
+            for name in list(remaining):  # snapshot: we mutate `remaining` below
+                target = current / name
+                if target.is_file():
+                    found[name] = target
+                    remaining.discard(name)
+            if not remaining or depth >= self.MAX_SCAN_DEPTH:
+                continue
+            try:
+                children = sorted(current.iterdir())
+            except OSError:
+                continue  # unreadable dir: skip it rather than fail the scan
+            for child in children:
+                if (
+                    child.is_dir()
+                    and not child.name.startswith(".")
+                    and child.name not in self.SKIP_DIRS
+                ):
+                    queue.append((child, depth + 1))
+        return found
+
+    def describe(
+        self, path: Path, config_path=_UNSET, metadata_path=_UNSET
+    ) -> WatchlistItem:
         """Build a :class:`WatchlistItem` for one project directory.
 
         Fills what can be read straight off disk: the ``.git`` marker (and, for a
-        normal checkout, the current branch), and the presence of
-        ``metadata.json`` / ``config.json``. Both files' *contents* are parsed —
-        ``metadata.json`` into the descriptive fields (see :meth:`apply_metadata`)
-        and ``config.json`` into the registry-config fields ``tags`` / ``notes``
-        (see :meth:`apply_config`); the ``track`` flag is handled separately in
+        normal checkout, the current branch), plus the *highest-level*
+        ``metadata.json`` / ``config.json`` found beneath ``path`` (see
+        :meth:`locate`). Both files' *contents* are parsed — ``metadata.json``
+        into the descriptive fields (see :meth:`apply_metadata`) and
+        ``config.json`` into the registry-config fields ``tags`` / ``notes`` (see
+        :meth:`apply_config`); the ``track`` flag is handled separately in
         :meth:`scan` via :meth:`is_tracked`. A missing/empty/malformed file of
         either kind is harmless — the corresponding fields simply stay ``None``.
+
+        ``config_path`` / ``metadata_path`` may be supplied by a caller that has
+        already run :meth:`locate` (as :meth:`scan` does, to avoid walking the
+        tree twice); each is a :class:`~pathlib.Path`, or ``None`` for "searched,
+        not found". Left unset, they are resolved here via :meth:`locate`.
         """
+        if config_path is _UNSET or metadata_path is _UNSET:
+            found = self.locate(path)
+            if config_path is _UNSET:
+                config_path = found.get("config.json")
+            if metadata_path is _UNSET:
+                metadata_path = found.get("metadata.json")
+
         item = WatchlistItem()
         item.path = str(path)
         item.projectName = path.name
@@ -83,15 +164,13 @@ class Scanner:
         else:
             item.dirType = "dir"
 
-        metadata = path / "metadata.json"
-        if metadata.is_file():
-            item.metadatapath = str(metadata)
-            self.apply_metadata(item, metadata)
+        if metadata_path is not None:
+            item.metadatapath = str(metadata_path)
+            self.apply_metadata(item, metadata_path)
 
-        config = path / "config.json"
-        if config.is_file():
-            item.configpath = str(config)
-            self.apply_config(item, config)
+        if config_path is not None:
+            item.configpath = str(config_path)
+            self.apply_config(item, config_path)
 
         return item
 
@@ -155,16 +234,26 @@ class Scanner:
     def is_tracked(self, path: Path) -> bool:
         """Whether ``path`` should be indexed, per its ``config.json`` ``track`` flag.
 
+        Convenience wrapper: locates the highest-level ``config.json`` under
+        ``path`` (see :meth:`locate`) and applies the track gate to it.
+        :meth:`scan` instead reuses the config path from its own :meth:`locate`
+        call — via :meth:`_is_tracked_config` — to avoid walking the tree twice.
+        """
+        return self._is_tracked_config(self.locate(path).get("config.json"))
+
+    def _is_tracked_config(self, config_path) -> bool:
+        """Apply the track gate to an already-located ``config.json`` path.
+
         Tracked by default: a directory is only *excluded* when its
         ``config.json`` exists, parses as an object, and sets ``track`` to the
-        JSON literal ``false``. A missing/malformed config, or ``track`` absent or
-        set to anything other than boolean ``false``, keeps the directory tracked
-        — the registry never silently drops a project because of a bad file.
+        JSON literal ``false``. No config at all (``config_path is None``), a
+        malformed config, or ``track`` absent / set to anything other than boolean
+        ``false`` keeps the directory tracked — the registry never silently drops
+        a project because of a bad or missing file.
         """
-        config = path / "config.json"
-        if not config.is_file():
+        if config_path is None:
             return True
-        data = self.read_json(config)
+        data = self.read_json(config_path)
         if not isinstance(data, dict):
             return True
         return data.get("track") is not False

@@ -83,8 +83,13 @@ hyphenated directory names** — they are not importable as Python packages.
     candidate projects, and `upsert`s a `WatchlistItem` for each. Detection is cheap and
     side-effect-free: `.git` marker + current branch read straight from `.git/HEAD` (no subprocess),
     and parses `metadata.json` (→ descriptive fields) and `config.json` (→ `tags`/`notes`, and the
-    `track` opt-out gate — an untracked dir is skipped and pruned). All parsing is defensive: a
-    bad/empty/malformed file never raises. See `project/design/{metadata,config}-schema.md`.
+    `track` opt-out gate — an untracked dir is skipped and pruned). For metadata/config it finds the
+    **highest-level** (shallowest) file of each *anywhere beneath* the candidate via a bounded BFS
+    (`Scanner.locate`: skips hidden + vendor/build dirs like `node_modules`, capped at
+    `MAX_SCAN_DEPTH`; the two files are searched independently and may sit at different depths). `scan`
+    runs `locate` **once** per candidate and reuses the paths for both the track gate and `describe`.
+    All parsing is defensive: a bad/empty/malformed file never raises. See
+    `project/design/{metadata,config}-schema.md` and `project/design/file-discovery.md`.
   - `app/api/registry.py` — `Registry(connection)`: **read-only** query facade over the `v_*` views.
     Methods (`projects`, `git_projects`, `by_cycle`, `by_project`, `get_by_path`, `cycle_counts`)
     are thin typed wrappers returning `WatchlistItem`s / aggregates. Reads only — writes stay on
