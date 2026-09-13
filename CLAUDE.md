@@ -95,9 +95,13 @@ hyphenated directory names** — they are not importable as Python packages.
     are thin typed wrappers returning `WatchlistItem`s / aggregates. Reads only — writes stay on
     `WatchlistRepo`, so a client holding a `Registry` cannot mutate the store. See
     `project/design/query-api.md`.
-  - `app/ux/tui.py` — read-only `rich` TUI client over `Registry`. `render_table` is pure
-    (items in, `Table` out) so it's testable without a DB; `--watch` live-refreshes. `app/main.py`
-    is still an empty stub.
+  - `app/ux/tui.py` — read-only `rich` TUI client over `Registry`, rendered as a single-screen
+    dashboard: a title `Rule`, a `cycle × count` summary bar (from `Registry.cycle_counts`), and a
+    rounded table (Project / Type / Branch / Cycle / Tags / Path, with git-vs-dir glyphs and
+    cycle colouring from the shared `CYCLE_STYLES` map). The render helpers (`render_summary`,
+    `render_table`, `render_dashboard`) are all **pure** — data in, `rich` renderable out — so the
+    whole view is tested without a DB or terminal; `--watch` live-refreshes. `app/main.py` is still
+    an empty stub.
 - `clients/go/` — the Go client: a **separate Go module** (`go.mod`, `main.go`, `README.md`),
   read-only over the **same** SQLite file and the **same** `v_*` views the Python side uses. Pure-Go
   `modernc.org/sqlite` (no cgo); opens the DB `mode=ro`; `-git` / `-json` / `-db` flags.
