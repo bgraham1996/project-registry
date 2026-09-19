@@ -15,8 +15,9 @@ across different filesystem paths and Obsidian vaults. The design intent (from `
 
 **Maturity: working first vertical slice, both clients real.** The full pipeline is in place —
 `uv run main.py` scans the configured roots and indexes the projects found into SQLite; a read-only
-query API (`app/api/registry.py`) exposes shared SQL **views**; and two clients read those views: a
-Python `rich` TUI (`app/ux/tui.py`) and a Go CLI (`clients/go/`). Remaining empty modules
+query API (`app/api/registry.py`) exposes shared SQL **views**; and three clients read those views: a
+Python `rich` TUI (`app/ux/tui.py`), a Python query CLI (`app/ux/cli.py`), and a Go CLI
+(`clients/go/`). Remaining empty modules
 (`app/data_models/projects.py`, `session_manager.py`, `app/main.py`) are intentional
 future-direction stubs — **keep them**. Design decisions are recorded as Markdown under
 `project/design/` (three ADRs exist); keep adding there as decisions land.
@@ -24,8 +25,9 @@ future-direction stubs — **keep them**. Design decisions are recorded as Markd
 ## Environment and commands
 
 Python 3.13 managed with [`uv`](https://docs.astral.sh/uv/) (pinned via `.python-version`).
-`pyproject.toml` declares one runtime dep (**`rich`**, for the TUI; the DB layer itself uses the
-stdlib `sqlite3`) and **`pytest`** as a dev dep. Tests live in `tests/` with `pythonpath=["."]`, so
+`pyproject.toml` declares two runtime deps (**`rich`** for the TUI, **`click`** for the query CLI;
+the DB layer itself uses the stdlib `sqlite3`) and **`pytest`** as a dev dep. Tests live in `tests/`
+with `pythonpath=["."]`, so
 `uv run pytest` works and is the real suite (unlike some sibling projects). The Go client is a
 separate module under `clients/go/` (pure-Go `modernc.org/sqlite`, no cgo).
 
@@ -33,6 +35,7 @@ separate module under `clients/go/` (pure-Go `modernc.org/sqlite`, no cgo).
 uv sync                       # create/refresh .venv and install deps
 uv run main.py                # scan configured roots, index projects, list watched dirs
 uv run python -m app.ux.tui   # read-only rich TUI over the registry (--watch to live-refresh)
+uv run python -m app.ux.cli list        # read-only query CLI (list/show/cycles; --git/--cycle/--json)
 uv run pytest                 # run the test suite (tests/)
 uv add <pkg>                  # add a runtime dependency
 cd clients/go && go build -o registry . && ./registry   # Go client (-git / -json / -db flags)
@@ -52,7 +55,10 @@ hyphenated directory names** — they are not importable as Python packages.
 
 - `main.py` (root) — working entry point / smoke test: builds `Db`, calls `init()` (create-or-open
   + schema), then via `WatchlistRepo` idempotently `upsert`s an entry for this repo and prints
-  all watched dirs. Running it writes a real row to `~/.config/dev-reg/registry.db`.
+  all watched dirs. Running it writes a real row to `~/.config/dev-reg/registry.db`. Takes a
+  repeatable `--scan-root DIR` flag (stdlib `argparse`) that **overrides** the configured
+  `scan_roots` when given (else falls back to config); `~` is expanded. The pure `resolve_roots`
+  helper (config + CLI roots → root list) is unit-tested in `tests/test_main.py`.
 - `app/` — core library.
   - `app/config_service/cnfg.py` — `Configure`: `default()` seeds `{db_dir: ~/.config/dev-reg,
     db_name: registry.db}`, `fig()` returns the dict, `db_path()` returns the expanded `Path`.
@@ -102,10 +108,21 @@ hyphenated directory names** — they are not importable as Python packages.
     `render_table`, `render_dashboard`) are all **pure** — data in, `rich` renderable out — so the
     whole view is tested without a DB or terminal; `--watch` live-refreshes. `app/main.py` is still
     an empty stub.
+  - `app/ux/cli.py` — read-only **query CLI** (`click`) — the command-line sibling of the TUI, for
+    one-shot lookups against an already-scanned registry (scanning stays on `main.py`). Opens the DB
+    `mode=ro` (same read-only contract as the Go client), talks only to `Registry`. Commands: `list`
+    (`--git` / `--cycle` / `--project`, plus output `--json` **or** `--csv` — mutually exclusive; the
+    filters compose), `show <path>` (`--json`), `cycles` (`--json`); global `--db` overrides the DB
+    path. `--csv` emits RFC-4180 CSV to stdout (redirect to a file) with columns driven off the same
+    `_item_dict` as `--json` so the two never drift; `tags` (a list) is flattened to a `;`-joined
+    cell. The `format_*` / `render_detail` helpers are **pure**, and it reuses the TUI's
+    `render_table` / `render_summary` so both clients render identically. Run via
+    `uv run python -m app.ux.cli`.
 - `clients/go/` — the Go client: a **separate Go module** (`go.mod`, `main.go`, `README.md`),
   read-only over the **same** SQLite file and the **same** `v_*` views the Python side uses. Pure-Go
   `modernc.org/sqlite` (no cgo); opens the DB `mode=ro`; `-git` / `-json` / `-db` flags.
-- `tests/` — real pytest suite (`test_scanner.py`, `test_api.py`, `test_tui.py`), using temp dirs +
+- `tests/` — real pytest suite (`test_scanner.py`, `test_api.py`, `test_tui.py`, `test_cli.py`),
+  using temp dirs +
   in-memory DBs, never the real registry or the live tree.
 - `libs/` — reserved for general reusable tooling (empty).
 - `regProject/` — a sample/target "registered project" with populated `metadata.json` and
