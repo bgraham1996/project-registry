@@ -20,10 +20,15 @@ class WatchlistItem:
         self.cycle = None
         self.dirType = None
 
-        # registry config (from config.json): tags is a list in memory,
+        # descriptive metadata (from metadata.json): tags is a list in memory,
         # stored JSON-encoded in the TEXT column; notes is a plain string.
         self.tags = None
         self.notes = None
+
+        # lifecycle: NULL/None while the dir is present & tracked; set to a
+        # timestamp when the scanner soft-removes it (dir gone, ignored, or
+        # opted out via config.json "track": false). Kept for history.
+        self.removedAt = None
 
     def init(self):
         return True
@@ -48,6 +53,9 @@ class WatchlistItem:
             # tags is a list -> JSON text; None stays NULL (distinct from "[]")
             "tags": json.dumps(self.tags) if self.tags is not None else None,
             "notes": self.notes,
+            # None for a freshly-scanned (present) item: an upsert therefore clears
+            # removed_at, so a previously-removed dir that reappears is reactivated.
+            "removed_at": self.removedAt,
         }
 
     @classmethod
@@ -68,4 +76,5 @@ class WatchlistItem:
         tags = row["tags"]
         item.tags = json.loads(tags) if tags is not None else None
         item.notes = row["notes"]
+        item.removedAt = row["removed_at"]
         return item

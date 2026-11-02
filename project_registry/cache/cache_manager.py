@@ -2,7 +2,7 @@ import sqlite3
 from pathlib import Path
 
 from project_registry.config_service.cnfg import Configure
-from project_registry.cache.schema import MIGRATIONS, SCHEMA
+from project_registry.cache.schema import MIGRATIONS, TABLES, VIEWS
 
 
 class Db:
@@ -29,13 +29,28 @@ class Db:
         existed = path.exists()
         self.connection = sqlite3.connect(path)
         self.connection.row_factory = sqlite3.Row
+        # Order matters: create tables, then add any missing columns, then (re)build
+        # views — so a view may reference a migrated-in column (e.g. removed_at).
         self.create_tables()
         self._migrate()
+        self._create_views()
         return existed  # True: opened existing, False: created new
 
     def create_tables(self):
         cur = self.connection.cursor()
-        for ddl in SCHEMA:
+        for ddl in TABLES:
+            cur.execute(ddl)
+        self.connection.commit()
+
+    def _create_views(self):
+        """(Re)create the read-contract views from source.
+
+        Each view is dropped and recreated so a changed view body takes effect on
+        an existing database (``CREATE VIEW IF NOT EXISTS`` would keep the stale
+        one). Runs after :meth:`_migrate` so views can reference migrated columns.
+        """
+        cur = self.connection.cursor()
+        for ddl in VIEWS:
             cur.execute(ddl)
         self.connection.commit()
 

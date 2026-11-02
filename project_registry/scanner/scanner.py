@@ -28,28 +28,38 @@ _UNSET = object()
 class Scanner:
     """Index projects under a fixed set of allowed root directories."""
 
-    def __init__(self, repo, roots):
+    def __init__(self, repo, roots, ignore=None):
         self.repo = repo
         # Accept str or Path roots; expand ~ so callers can pass config values
         # or literal paths interchangeably.
         self.roots = [Path(root).expanduser() for root in roots]
+        # Candidate directory names to skip entirely (e.g. "archive" — a holding
+        # pen for dormant projects). Matched case-insensitively against each
+        # immediate subdir's name. Sourced from Configure.ignore(); an ignored dir
+        # that was indexed before is soft-removed by the reconcile pass in scan().
+        self.ignore = {name.lower() for name in (ignore or [])}
 
     def scan(self) -> list[WatchlistItem]:
-        """Describe and store every *tracked* candidate. Returns the items stored.
+        """Describe and store every *tracked, present* candidate. Returns those items.
 
-        A candidate whose ``config.json`` sets ``"track": false`` is skipped and,
-        if it was indexed on a previous run, pruned — so opting out of tracking
-        means "absent from the registry", even after a project flips the flag.
-        Everything else is ``upsert``ed (idempotent on ``path``).
+        Each tracked candidate is ``upsert``ed (idempotent on ``path``); an upsert
+        also clears ``removed_at``, so a dir that had been soft-removed and then
+        reappears is reactivated. Afterwards a reconcile pass **soft-removes** (does
+        not delete) any previously-live row under a scanned root that this pass did
+        not see — a dir that was deleted/renamed/moved, is now ignored, or opted out
+        via ``config.json`` ``"track": false``. Removed rows stay in the table as
+        history and are hidden from the client-facing views.
         """
         items = []
+        seen: set[str] = set()
         for candidate in self.candidates():
             # One walk per candidate: locate here, then reuse the found paths for
             # both the track gate and describe() so the tree isn't walked twice.
             found = self.locate(candidate)
             config_path = found.get("config.json")
             if not self._is_tracked_config(config_path):
-                self.repo.delete_by_path(str(candidate))
+                # Opted out: leave it out of `seen` so the reconcile pass below
+                # soft-removes any existing row for it.
                 continue
             item = self.describe(
                 candidate,
@@ -58,20 +68,40 @@ class Scanner:
             )
             self.repo.upsert(item)
             items.append(item)
+            seen.add(str(candidate))
+        self._reconcile(seen)
         return items
+
+    def _reconcile(self, seen: set[str]) -> None:
+        """Soft-remove live rows under the scanned roots that weren't seen this pass.
+
+        Scoped to the roots actually scanned (a row is only a candidate for removal
+        when its parent directory is one of :attr:`roots`), so scanning one root
+        never touches rows indexed under a different root.
+        """
+        roots = {str(root) for root in self.roots}
+        for path in self.repo.active_paths():
+            if path in seen:
+                continue
+            if str(Path(path).parent) in roots:
+                self.repo.mark_removed_by_path(path)
 
     def candidates(self):
         """Yield each root's immediate subdirectories.
 
         Missing roots are skipped (a configured root need not exist yet), as are
         hidden ``.dotdirs`` — they are tooling/state (``.git``, ``.obsidian``),
-        not projects.
+        not projects — and any directory whose name is in :attr:`ignore`.
         """
         for root in self.roots:
             if not root.is_dir():
                 continue
             for child in sorted(root.iterdir()):
-                if child.is_dir() and not child.name.startswith("."):
+                if (
+                    child.is_dir()
+                    and not child.name.startswith(".")
+                    and child.name.lower() not in self.ignore
+                ):
                     yield child
 
     # Files the scanner hunts for inside each candidate, and how far it descends.
@@ -133,12 +163,13 @@ class Scanner:
         Fills what can be read straight off disk: the ``.git`` marker (and, for a
         normal checkout, the current branch), plus the *highest-level*
         ``metadata.json`` / ``config.json`` found beneath ``path`` (see
-        :meth:`locate`). Both files' *contents* are parsed — ``metadata.json``
-        into the descriptive fields (see :meth:`apply_metadata`) and
-        ``config.json`` into the registry-config fields ``tags`` / ``notes`` (see
-        :meth:`apply_config`); the ``track`` flag is handled separately in
-        :meth:`scan` via :meth:`is_tracked`. A missing/empty/malformed file of
-        either kind is harmless — the corresponding fields simply stay ``None``.
+        :meth:`locate`). All descriptive fields — including ``tags`` / ``notes`` —
+        come from ``metadata.json`` (see :meth:`apply_metadata`). ``config.json`` is
+        reserved for project-specific *configuration*: its path is recorded, but the
+        only key the registry reads from it is the ``track`` opt-out gate, handled
+        separately in :meth:`scan` via :meth:`is_tracked` — its contents never
+        populate item fields. A missing/empty/malformed file of either kind is
+        harmless — the corresponding fields simply stay ``None``.
 
         ``config_path`` / ``metadata_path`` may be supplied by a caller that has
         already run :meth:`locate` (as :meth:`scan` does, to avoid walking the
@@ -169,8 +200,8 @@ class Scanner:
             self.apply_metadata(item, metadata_path)
 
         if config_path is not None:
+            # Recorded for reference only; the track gate is read in scan().
             item.configpath = str(config_path)
-            self.apply_config(item, config_path)
 
         return item
 
@@ -186,12 +217,14 @@ class Scanner:
     def apply_metadata(self, item: WatchlistItem, metadata_path: Path) -> None:
         """Fill descriptive fields on ``item`` from ``metadata.json``.
 
-        Best-effort and defensive: a missing/unreadable/malformed file, a JSON
-        top level that isn't an object, or a key whose value isn't a scalar all
-        leave the corresponding field untouched (``None``) rather than raising —
-        indexing must never fail because one project ships a bad metadata file.
-        Scalar values are coerced to ``str`` to match the TEXT columns. A present
-        ``name`` overrides the directory-name default set in :meth:`describe`.
+        Reads the scalar fields in :data:`METADATA_FIELDS` plus ``tags`` (a list of
+        scalars -> list of ``str``) and ``notes`` (a string). Best-effort and
+        defensive: a missing/unreadable/malformed file, a JSON top level that isn't
+        an object, or a value of the wrong type all leave the corresponding field
+        untouched (``None``) rather than raising — indexing must never fail because
+        one project ships a bad metadata file. Scalar values are coerced to ``str``
+        to match the TEXT columns. A present ``name`` overrides the directory-name
+        default set in :meth:`describe`. See ``project/design/metadata-schema.md``.
         """
         data = self.read_json(metadata_path)
         if not isinstance(data, dict):
@@ -203,21 +236,6 @@ class Scanner:
                 continue
             if isinstance(value, (str, int, float)):
                 setattr(item, attr, str(value))
-
-    def apply_config(self, item: WatchlistItem, config_path: Path) -> None:
-        """Fill registry-config fields on ``item`` from ``config.json``.
-
-        Reads only ``tags`` (a list of scalars -> list of ``str``) and ``notes``
-        (a string). The ``track`` flag is *not* applied to the item — it gates
-        whether the item is stored at all, handled in :meth:`scan` /
-        :meth:`is_tracked`. Same defensive stance as :meth:`apply_metadata`: a
-        missing/unreadable/malformed file or a non-object top level leaves the
-        fields untouched (``None``) rather than raising, and values of the wrong
-        JSON type are skipped. See ``project/design/config-schema.md``.
-        """
-        data = self.read_json(config_path)
-        if not isinstance(data, dict):
-            return
         tags = data.get("tags")
         if isinstance(tags, list):
             # keep only scalar tags, coerced to str; bool is an int subclass but

@@ -66,21 +66,43 @@ class WatchlistRepo:
         ).fetchall()
         return [WatchlistItem.from_row(r) for r in rows]
 
-    def all(self) -> list[WatchlistItem]:
+    def all(self, include_removed: bool = False) -> list[WatchlistItem]:
+        """Every watched dir, live ones only by default.
+
+        ``include_removed=True`` also returns soft-removed rows (``removed_at`` set),
+        which is how history is inspected; the default matches the client-facing
+        views, which never show removed rows.
+        """
+        where = "" if include_removed else " WHERE removed_at IS NULL"
         rows = self.connection.execute(
-            "SELECT * FROM watched_dirs ORDER BY path"
+            f"SELECT * FROM watched_dirs{where} ORDER BY path"
         ).fetchall()
         return [WatchlistItem.from_row(r) for r in rows]
 
-    def delete_by_path(self, path: str) -> bool:
-        """Remove the row at ``path`` if present; returns whether a row was deleted.
+    def active_paths(self) -> set[str]:
+        """The ``path`` of every row not currently soft-removed.
 
-        Used by the scanner to prune a directory that has opted out of tracking
-        (``config.json`` ``"track": false``) since it was last indexed, so
-        "untracked" means "absent from the registry" even after a flip.
+        The scanner uses this to reconcile: any live row whose path it did not see
+        on this pass (dir gone, now ignored, or opted out) gets soft-removed.
+        """
+        rows = self.connection.execute(
+            "SELECT path FROM watched_dirs WHERE removed_at IS NULL"
+        ).fetchall()
+        return {r["path"] for r in rows}
+
+    def mark_removed_by_path(self, path: str) -> bool:
+        """Soft-remove the row at ``path``; returns whether a live row was marked.
+
+        Sets ``removed_at`` (and bumps ``updated_at``) only on a currently-live row,
+        so re-marking an already-removed row is a no-op and its original
+        ``removed_at`` timestamp is preserved. The row is kept as history — the
+        client-facing views filter it out.
         """
         cur = self.connection.execute(
-            "DELETE FROM watched_dirs WHERE path = ?", (path,)
+            "UPDATE watched_dirs "
+            "SET removed_at = datetime('now'), updated_at = datetime('now') "
+            "WHERE path = ? AND removed_at IS NULL",
+            (path,),
         )
         self.connection.commit()
         return cur.rowcount > 0

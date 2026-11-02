@@ -19,6 +19,11 @@ class Configure:
             # free rein over the filesystem. Each root is a directory whose
             # immediate children are candidate projects.
             "scan_roots": ["~/dev"],
+            # Candidate directory names the scanner skips entirely (matched
+            # case-insensitively against each root's immediate children). "archive"
+            # is where dormant projects are parked — kept on disk but not actively
+            # tracked; an ignored dir already in the registry is soft-removed.
+            "ignore": ["archive"],
         }
         return True
 
@@ -33,3 +38,7 @@ class Configure:
     def scan_roots(self) -> list[Path]:
         """The directories the scanner is allowed to descend into, ~ expanded."""
         return [Path(root).expanduser() for root in self._config.get("scan_roots", [])]
+
+    def ignore(self) -> list[str]:
+        """Candidate directory names the scanner skips (e.g. ``["archive"]``)."""
+        return list(self._config.get("ignore", []))

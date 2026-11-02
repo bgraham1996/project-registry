@@ -2,5 +2,7 @@
   "name": "regProject",
   "version": "0.2.0",
   "branchVersion": "0.2.0-dev",
-  "cycle": "active"
+  "cycle": "active",
+  "tags": ["example", "fixture"],
+  "notes": "Sample registered project used as a scanner target/example. All descriptive data — including tags and notes — lives here in metadata.json."
 }

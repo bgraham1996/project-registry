@@ -22,7 +22,7 @@ views: a Python `rich` TUI (`project_registry/ux/tui.py`), a Python query CLI
 unified behind one installable `project-registry` command (subcommands `scan`/`list`/`show`/`cycles`/`tui`). Remaining empty modules
 (`project_registry/data_models/projects.py`, `session_manager.py`, `project_registry/main.py`) are intentional
 future-direction stubs — **keep them**. Design decisions are recorded as Markdown under
-`project/design/` (six ADRs exist); keep adding there as decisions land.
+`project/design/` (seven ADRs exist); keep adding there as decisions land.
 
 ## Environment and commands
 
@@ -74,41 +74,53 @@ distribution name on PyPI-style metadata is still the hyphenated `project-regist
   is still unit-tested in `tests/test_main.py` (which imports `resolve_roots` re-exported from `main`).
 - `project_registry/` — core library.
   - `project_registry/config_service/cnfg.py` — `Configure`: `default()` seeds `{db_dir: ~/.config/dev-reg,
-    db_name: registry.db}`, `fig()` returns the dict, `db_path()` returns the expanded `Path`.
+    db_name: registry.db, scan_roots: [~/dev], ignore: [archive]}`, `fig()` returns the dict,
+    `db_path()`/`scan_roots()`/`ignore()` return the expanded values. `ignore` = candidate dir names
+    the scanner skips (see scanner below).
   - `project_registry/cache/cache_manager.py` — `Db`: `init()` ensures the parent dir exists, connects via
-    `sqlite3` (creating the file if absent), applies the schema idempotently via `create_tables()`,
+    `sqlite3` (creating the file if absent), then runs **`create_tables()` → `_migrate()` →
+    `_create_views()`** (order matters: views may reference a migrated-in column like `removed_at`),
     and returns whether it pre-existed; `close()` tears down. Uses `sqlite3.Row` row factory.
-  - `project_registry/cache/schema.py` — central `SCHEMA` list of idempotent DDL (`CREATE ... IF NOT EXISTS`):
-    the `watched_dirs` table (columns mirror `WatchlistItem`, camelCase → snake_case, including
-    `tags`/`notes`), an index on `project_name`, and the read **views** `v_projects` /
-    `v_git_projects` (full column set, filter/order only) and `v_cycle_counts` (rollup). Also holds
-    `MIGRATIONS` — additive `ALTER TABLE ... ADD COLUMN` statements applied by `Db._migrate()` after
-    `create_tables()`, each tolerant of "duplicate column" so a fresh DB and an old DB converge.
-    Add new tables/indexes/views here; `init()` applies them on startup. Changing a view *body* or an
-    existing column has **no** migration path yet (additive columns only) — a known gap.
+  - `project_registry/cache/schema.py` — DDL in three ordered phases: `TABLES` (idempotent
+    `CREATE TABLE/INDEX IF NOT EXISTS` — the `watched_dirs` table, columns mirror `WatchlistItem`
+    camelCase → snake_case, incl. `tags`/`notes`/`removed_at`); `MIGRATIONS` (additive `ALTER TABLE ...
+    ADD COLUMN`, each tolerant of "duplicate column" so a fresh and an old DB converge); and `VIEWS`
+    (the read contract — `v_projects` / `v_git_projects` / `v_cycle_counts`, each **`DROP VIEW` +
+    `CREATE VIEW`** so a changed body actually rolls out to existing DBs, and each filtering
+    `removed_at IS NULL` so clients see only live rows). `SCHEMA = TABLES + VIEWS` is a convenience for
+    fresh-DB consumers (test fixtures). Known gap remaining: **table/column** changes are still
+    additive-only (view-body changes now propagate). See `project/design/lifecycle-and-ignore.md`.
   - `project_registry/cache/watchlist_repo.py` — `WatchlistRepo(connection)`: persistence for the
     `watched_dirs` table. `insert(item)` (raises on duplicate `path`) and `upsert(item)`
     (idempotent on `path` — updates in place, keeps the existing row's `id`/`created_at`, bumps
-    `updated_at`, returns the stored id), plus queries `get(id)`, `get_by_path(path)`,
-    `find_by_project(name)`, `all()` — each returns `WatchlistItem`(s) or `None`. SQL lives here,
-    not in the model or `Db`.
+    `updated_at`, **clears `removed_at`** so a reappearing dir reactivates, returns the stored id),
+    plus queries `get(id)`, `get_by_path(path)`, `find_by_project(name)`, `all(include_removed=False)`
+    (live-only by default). Soft-delete lives here too: `mark_removed_by_path(path)` (sets
+    `removed_at` on a live row) and `active_paths()` (the scanner's reconcile input). There is **no**
+    hard delete. SQL lives here, not in the model or `Db`.
   - `project_registry/data_models/watched_dirs.py` — `WatchlistItem` (a tracked project dir: `path`,
-    `metadatapath`, `configpath`, `gitpath`, plus project/branch/cycle metadata and `tags`/`notes`).
-    Owns the row mapping: `to_row()` (attrs -> columns, camelCase -> snake_case) and
-    `from_row(row)` (classmethod, the inverse). `session_manager.py` and `projects.py` are still
-    empty (intentional stubs).
-  - `project_registry/scanner/scanner.py` — `Scanner(repo, roots)`: the indexer. Descends **only** the explicit
-    `scan_roots` from config (never the whole filesystem), treats each root's immediate subdirs as
-    candidate projects, and `upsert`s a `WatchlistItem` for each. Detection is cheap and
-    side-effect-free: `.git` marker + current branch read straight from `.git/HEAD` (no subprocess),
-    and parses `metadata.json` (→ descriptive fields) and `config.json` (→ `tags`/`notes`, and the
-    `track` opt-out gate — an untracked dir is skipped and pruned). For metadata/config it finds the
-    **highest-level** (shallowest) file of each *anywhere beneath* the candidate via a bounded BFS
+    `metadatapath`, `configpath`, `gitpath`, project/branch/cycle metadata, `tags`/`notes`, and
+    `removedAt` — NULL while present/tracked). Owns the row mapping: `to_row()` (attrs -> columns,
+    camelCase -> snake_case; emits `removed_at=None` for a fresh item so an upsert clears it) and
+    `from_row(row)` (the inverse). `session_manager.py` and `projects.py` are still empty (intentional
+    stubs).
+  - `project_registry/scanner/scanner.py` — `Scanner(repo, roots, ignore=None)`: the indexer. Descends
+    **only** the explicit `scan_roots` (never the whole filesystem), treats each root's immediate
+    subdirs as candidate projects (skipping hidden dirs and any name in `ignore`, matched
+    case-insensitively — e.g. `archive`), and `upsert`s a `WatchlistItem` for each present, tracked
+    one. Detection is cheap and side-effect-free: `.git` marker + branch from `.git/HEAD` (no
+    subprocess); **all descriptive fields incl. `tags`/`notes` come from `metadata.json`**, while
+    `config.json` is reserved for project-specific config — only its `track` opt-out gate is read, its
+    contents never populate item fields (its path is still recorded). For both files it finds the
+    **highest-level** (shallowest) occurrence *anywhere beneath* the candidate via a bounded BFS
     (`Scanner.locate`: skips hidden + vendor/build dirs like `node_modules`, capped at
-    `MAX_SCAN_DEPTH`; the two files are searched independently and may sit at different depths). `scan`
-    runs `locate` **once** per candidate and reuses the paths for both the track gate and `describe`.
-    All parsing is defensive: a bad/empty/malformed file never raises. See
-    `project/design/{metadata,config}-schema.md` and `project/design/file-discovery.md`.
+    `MAX_SCAN_DEPTH`; searched independently, may sit at different depths); `scan` runs `locate`
+    **once** per candidate. Removal is a **soft-delete for history**: after upserting, a reconcile pass
+    `mark_removed_by_path`s any previously-live row under a scanned root it didn't see this pass (dir
+    gone/renamed/moved, now ignored, or `track:false`) — scoped to the scanned roots, never
+    hard-deleted, hidden from the views. All parsing is defensive: a bad/empty/malformed file never
+    raises. See `project/design/{metadata,config}-schema.md`, `file-discovery.md`, and
+    `lifecycle-and-ignore.md` (the current source of truth for the metadata/config split + lifecycle).
   - `project_registry/ux/scan.py` — the indexer as an importable routine: `resolve_roots(config,
     cli_roots)` (pure; CLI roots override config, `~` expanded) and `run_scan(cli_roots, echo)` (builds
     `Db`, resolves roots, runs `Scanner`, reports via the injected `echo`). This is the **one write
@@ -154,10 +166,12 @@ distribution name on PyPI-style metadata is still the hyphenated `project-regist
   not slips — confirmed with the user; leave them. More broadly, the empty stub files/dirs
   (`project_registry/main.py`, `project_registry/data_models/{projects,session_manager}.py`, etc.) are intentional
   future-direction markers — do **not** delete them "cleaning up".
-- **Design docs are ADRs (point-in-time).** A later doc may supersede an earlier one — e.g.
-  `metadata-schema.md` says `config.json` is "recorded by path only / not parsed", which
-  `config-schema.md` then overrides once config parsing landed. That's expected; don't "fix" the
-  older doc to match the code.
+- **Design docs are ADRs (point-in-time); read them newest-first.** A later doc supersedes an earlier
+  one and the older doc is deliberately **not** rewritten to match the code. The chain for the
+  metadata/config split: `metadata-schema.md` ("config recorded by path only") → `config-schema.md`
+  (config parses `tags`/`notes`/`track`) → **`lifecycle-and-ignore.md`** (current: `tags`/`notes` moved
+  back to `metadata.json`; `config.json` is config-only, just the `track` gate). When in doubt, the
+  newest ADR + the code win.
 - **`.claude/settings.json` sets `worktree.bgIsolation: none`** so background sessions edit this
   checkout in place (the user iterates here directly) rather than in an isolated worktree.
 

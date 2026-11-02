@@ -123,25 +123,30 @@ def test_non_object_and_nonscalar_metadata_are_ignored(tmp_path):
     assert item.projectVersion is None  # non-scalar value skipped
 
 
-def test_config_json_does_not_supply_metadata_fields(tmp_path):
+def test_config_json_supplies_no_item_fields(tmp_path):
     project = tmp_path / "theta"
     project.mkdir()
-    # config.json carries keys that belong to metadata.json; they must NOT bleed
-    # into the descriptive fields — config.json only supplies tags/notes/track.
-    (project / "config.json").write_text(json.dumps({"version": "9.9.9", "cycle": "prod"}))
+    # config.json is reserved for project-specific configuration: NONE of its keys
+    # populate item fields — descriptive data (incl. tags/notes) comes from
+    # metadata.json, and `track` only gates whether the item is stored at all.
+    (project / "config.json").write_text(
+        json.dumps({"version": "9.9.9", "cycle": "prod", "tags": ["x"], "notes": "n"})
+    )
 
     item = Scanner(repo=None, roots=[]).describe(project)
 
-    assert item.configpath == str(project / "config.json")
-    assert item.projectVersion is None  # version comes from metadata.json only
+    assert item.configpath == str(project / "config.json")  # path still recorded
+    assert item.projectVersion is None
     assert item.cycle is None
+    assert item.tags is None
+    assert item.notes is None
 
 
-def test_config_json_parses_tags_and_notes(tmp_path):
+def test_metadata_json_parses_tags_and_notes(tmp_path):
     project = tmp_path / "theta"
     project.mkdir()
-    (project / "config.json").write_text(
-        json.dumps({"track": True, "tags": ["example", "fixture"], "notes": "a note"})
+    (project / "metadata.json").write_text(
+        json.dumps({"tags": ["example", "fixture"], "notes": "a note"})
     )
 
     item = Scanner(repo=None, roots=[]).describe(project)
@@ -150,11 +155,11 @@ def test_config_json_parses_tags_and_notes(tmp_path):
     assert item.notes == "a note"
 
 
-def test_config_tags_keep_only_scalars_coerced_to_str(tmp_path):
+def test_metadata_tags_keep_only_scalars_coerced_to_str(tmp_path):
     project = tmp_path / "iota"
     project.mkdir()
     # mixed list: ints coerce to str, bool/objects/lists dropped.
-    (project / "config.json").write_text(
+    (project / "metadata.json").write_text(
         json.dumps({"tags": ["a", 2, True, {"x": 1}, ["nested"]]})
     )
 
@@ -163,16 +168,16 @@ def test_config_tags_keep_only_scalars_coerced_to_str(tmp_path):
     assert item.tags == ["a", "2"]
 
 
-def test_config_absent_or_malformed_leaves_tags_notes_none(tmp_path):
+def test_metadata_absent_or_malformed_leaves_tags_notes_none(tmp_path):
     plain = tmp_path / "kappa"
     plain.mkdir()
     assert Scanner(repo=None, roots=[]).describe(plain).tags is None
 
     bad = tmp_path / "lambda"
     bad.mkdir()
-    (bad / "config.json").write_text("{ not json ]")
+    (bad / "metadata.json").write_text("{ not json ]")
     item = Scanner(repo=None, roots=[]).describe(bad)
-    assert item.configpath == str(bad / "config.json")  # path still recorded
+    assert item.metadatapath == str(bad / "metadata.json")  # path still recorded
     assert item.tags is None and item.notes is None
 
 
@@ -207,15 +212,17 @@ def test_is_tracked_defaults_true_and_only_false_opts_out(tmp_path):
 def test_locate_finds_nested_config_and_metadata(tmp_path):
     project = tmp_path / "nested"
     (project / "project").mkdir(parents=True)
-    (project / "project" / "config.json").write_text(json.dumps({"notes": "deep"}))
-    (project / "project" / "metadata.json").write_text(json.dumps({"version": "3.0"}))
+    (project / "project" / "config.json").write_text(json.dumps({"track": True}))
+    (project / "project" / "metadata.json").write_text(
+        json.dumps({"version": "3.0", "notes": "deep"})
+    )
 
     item = Scanner(repo=None, roots=[]).describe(project)
 
     # highest-level occurrence is one level down; both are picked up there
     assert item.configpath == str(project / "project" / "config.json")
     assert item.metadatapath == str(project / "project" / "metadata.json")
-    assert item.notes == "deep"
+    assert item.notes == "deep"  # from metadata.json
     assert item.projectVersion == "3.0"
 
 
@@ -223,13 +230,12 @@ def test_locate_prefers_shallowest_config(tmp_path):
     project = tmp_path / "shallow"
     (project / "sub").mkdir(parents=True)
     # a root-level config must win over a deeper one
-    (project / "config.json").write_text(json.dumps({"notes": "root"}))
-    (project / "sub" / "config.json").write_text(json.dumps({"notes": "deeper"}))
+    (project / "config.json").write_text(json.dumps({"track": True}))
+    (project / "sub" / "config.json").write_text(json.dumps({"track": False}))
 
     item = Scanner(repo=None, roots=[]).describe(project)
 
     assert item.configpath == str(project / "config.json")
-    assert item.notes == "root"
 
 
 def test_locate_finds_files_at_independent_depths(tmp_path):
@@ -304,7 +310,7 @@ def test_is_tracked_honors_nested_config(tmp_path):
     assert scanner.is_tracked(project) is False
 
 
-def test_scan_indexes_and_prunes_via_nested_config(repo, tmp_path):
+def test_scan_indexes_and_soft_removes_via_nested_config(repo, tmp_path):
     # a project whose only config.json lives one level down, opting out
     make_git_project(tmp_path, "keep")
     optout = tmp_path / "optout"
@@ -316,8 +322,13 @@ def test_scan_indexes_and_prunes_via_nested_config(repo, tmp_path):
     assert {i.projectName for i in repo.all()} == {"keep", "optout"}
 
     (optout / "project" / "config.json").write_text(json.dumps({"track": False}))
-    scanner.scan()  # nested opt-out must prune the existing row
+    scanner.scan()  # nested opt-out must soft-remove the existing row
     assert {i.projectName for i in repo.all()} == {"keep"}
+    # the row is kept as history, not deleted
+    removed = {i.projectName: i for i in repo.all(include_removed=True)}
+    assert set(removed) == {"keep", "optout"}
+    assert removed["optout"].removedAt is not None
+    assert removed["keep"].removedAt is None
 
 
 def test_describe_plain_dir_has_no_git_fields(tmp_path):
@@ -373,7 +384,7 @@ def test_scan_upserts_all_candidates_and_is_idempotent(repo, tmp_path):
     assert len(repo.all()) == 2
 
 
-def test_scan_skips_untracked_and_prunes_on_flip(repo, tmp_path):
+def test_scan_skips_untracked_and_soft_removes_on_flip(repo, tmp_path):
     make_git_project(tmp_path, "keep")
     optout = tmp_path / "optout"
     optout.mkdir()
@@ -384,9 +395,62 @@ def test_scan_skips_untracked_and_prunes_on_flip(repo, tmp_path):
     scanner.scan()
     assert {i.projectName for i in repo.all()} == {"keep", "optout"}
 
-    # optout later opts out; a re-scan must drop its existing row (prune),
-    # leaving "untracked" == "absent from the registry".
+    # optout later opts out; a re-scan must drop its existing row from the live
+    # set (soft-remove), leaving "untracked" == "not shown by the views".
     (optout / "config.json").write_text(json.dumps({"track": False}))
     stored = scanner.scan()
     assert {i.projectName for i in stored} == {"keep"}
     assert {i.projectName for i in repo.all()} == {"keep"}
+
+
+def test_scan_soft_removes_vanished_dir_and_reactivates_on_return(repo, tmp_path):
+    make_git_project(tmp_path, "keep")
+    gone = make_git_project(tmp_path, "gone")
+
+    scanner = Scanner(repo=repo, roots=[tmp_path])
+    scanner.scan()
+    assert {i.projectName for i in repo.all()} == {"keep", "gone"}
+
+    # The directory disappears (deleted/renamed/moved) -> soft-removed on next scan.
+    import shutil
+    shutil.rmtree(gone)
+    scanner.scan()
+    assert {i.projectName for i in repo.all()} == {"keep"}
+    assert {i.projectName for i in repo.all(include_removed=True)} == {"keep", "gone"}
+
+    # It comes back -> the upsert clears removed_at, reactivating the SAME row.
+    before = repo.get_by_path(str(gone))
+    make_git_project(tmp_path, "gone")
+    scanner.scan()
+    assert {i.projectName for i in repo.all()} == {"keep", "gone"}
+    after = repo.get_by_path(str(gone))
+    assert after.removedAt is None
+    assert after.id == before.id  # same row reactivated, not a new one
+
+
+def test_scan_ignores_configured_dirs_and_soft_removes_existing(repo, tmp_path):
+    make_git_project(tmp_path, "keep")
+    make_git_project(tmp_path, "archive")
+
+    # First scan without ignore: archive is indexed like any other candidate.
+    Scanner(repo=repo, roots=[tmp_path]).scan()
+    assert {i.projectName for i in repo.all()} == {"keep", "archive"}
+
+    # Re-scan with archive ignored (case-insensitively): skipped as a candidate,
+    # and its existing row is soft-removed by reconciliation.
+    stored = Scanner(repo=repo, roots=[tmp_path], ignore=["Archive"]).scan()
+    assert {i.projectName for i in stored} == {"keep"}
+    assert {i.projectName for i in repo.all()} == {"keep"}
+    assert {i.projectName for i in repo.all(include_removed=True)} == {"keep", "archive"}
+
+
+def test_candidates_skips_ignored_dirs(tmp_path):
+    make_git_project(tmp_path, "one")
+    (tmp_path / "archive").mkdir()
+
+    names = {
+        p.name
+        for p in Scanner(repo=None, roots=[tmp_path], ignore=["archive"]).candidates()
+    }
+
+    assert names == {"one"}

@@ -44,8 +44,10 @@ def run_scan(cli_roots=None, echo=print):
     repo = WatchlistRepo(db.connection)
 
     roots = resolve_roots(db.config, cli_roots)
-    echo(f"Scanning {len(roots)} root(s): {', '.join(str(r) for r in roots)}")
-    Scanner(repo, roots).scan()
+    ignore = db.config.ignore()
+    suffix = f" (ignoring: {', '.join(ignore)})" if ignore else ""
+    echo(f"Scanning {len(roots)} root(s): {', '.join(str(r) for r in roots)}{suffix}")
+    Scanner(repo, roots, ignore=ignore).scan()
 
     items = repo.all()
     echo(f"{len(items)} watched dir(s):")
