@@ -1,4 +1,4 @@
-"""Tests for the read-only query CLI (:mod:`app.ux.cli`).
+"""Tests for the read-only query CLI (:mod:`project_registry.ux.cli`).
 
 The pure formatters are exercised directly, and the commands are driven through
 click's ``CliRunner`` against a real on-disk SQLite file (the CLI opens the DB by
@@ -14,10 +14,10 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from app.cache.schema import SCHEMA
-from app.cache.watchlist_repo import WatchlistRepo
-from app.data_models.watched_dirs import WatchlistItem
-from app.ux.cli import (
+from project_registry.cache.schema import SCHEMA
+from project_registry.cache.watchlist_repo import WatchlistRepo
+from project_registry.data_models.watched_dirs import WatchlistItem
+from project_registry.ux.cli import (
     cli,
     format_cycle_counts_json,
     format_items_csv,
@@ -203,4 +203,4 @@ def test_cycles_json_rolls_up(db_file):
 def test_missing_db_is_friendly(tmp_path):
     result = _run(tmp_path / "does-not-exist.db", "list")
     assert result.exit_code != 0
-    assert "run `uv run main.py`" in result.output
+    assert "run `project-registry scan`" in result.output

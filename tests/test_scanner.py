@@ -10,9 +10,9 @@ import sqlite3
 
 import pytest
 
-from app.cache.schema import SCHEMA
-from app.cache.watchlist_repo import WatchlistRepo
-from app.scanner.scanner import Scanner
+from project_registry.cache.schema import SCHEMA
+from project_registry.cache.watchlist_repo import WatchlistRepo
+from project_registry.scanner.scanner import Scanner
 
 
 @pytest.fixture

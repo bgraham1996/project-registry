@@ -1,22 +1,14 @@
+"""Dev entry point / smoke test for the indexer.
+
+The real scan implementation lives in :mod:`project_registry.ux.scan` (shared with
+the installed ``project-registry scan`` command). This root module stays as the
+run-from-checkout smoke test — ``uv run main.py [--scan-root DIR ...]`` — and keeps
+its own tiny ``argparse`` seam so ``resolve_roots`` wiring is exercised here too.
+"""
+
 import argparse
-from pathlib import Path
 
-from app.cache.cache_manager import Db
-from app.cache.watchlist_repo import WatchlistRepo
-from app.scanner.scanner import Scanner
-
-
-def resolve_roots(config, cli_roots) -> list[Path]:
-    """The roots to scan: explicit ``--scan-root`` values if any, else config.
-
-    ``cli_roots`` is the (possibly empty) list of ``--scan-root`` strings from the
-    command line. When one or more is given it *overrides* the configured
-    ``scan_roots`` entirely (it does not append); otherwise the configured roots
-    are used. Either way ``~`` is expanded so the two sources are interchangeable.
-    """
-    if cli_roots:
-        return [Path(root).expanduser() for root in cli_roots]
-    return config.scan_roots()
+from project_registry.ux.scan import resolve_roots, run_scan  # noqa: F401 (re-exported for tests)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -39,25 +31,7 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 def main(argv=None):
     args = parse_args(argv)
-
-    db = Db()
-    existed = db.init()
-    verb = "Connected to existing" if existed else "Created new"
-    print(f"{verb} registry database at {db.path()}")
-
-    repo = WatchlistRepo(db.connection)
-
-    roots = resolve_roots(db.config, args.scan_roots)
-    print(f"Scanning {len(roots)} root(s): {', '.join(str(r) for r in roots)}")
-    Scanner(repo, roots).scan()  # idempotent upserts; re-running just refreshes rows
-
-    items = repo.all()
-    print(f"{len(items)} watched dir(s):")
-    for item in items:
-        branch = f" @{item.branchName}" if item.branchName else ""
-        print(f"  - {item.projectName or '?'} [{item.dirType or '?'}]{branch}  {item.path}")
-
-    db.close()
+    run_scan(args.scan_roots, echo=print)
 
 
 if __name__ == "__main__":

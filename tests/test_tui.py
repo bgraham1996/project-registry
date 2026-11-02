@@ -8,8 +8,8 @@ import re
 
 from rich.console import Console
 
-from app.data_models.watched_dirs import WatchlistItem
-from app.ux.tui import render_summary, render_table, render_dashboard, _renderable
+from project_registry.data_models.watched_dirs import WatchlistItem
+from project_registry.ux.tui import render_summary, render_table, render_dashboard, _renderable
 
 
 def _item(name, dir_type="git", branch="main", path=None, cycle="active", tags=None):
@@ -76,7 +76,7 @@ def test_render_dashboard_includes_title_and_count():
 def test_renderable_falls_back_to_empty_state():
     result = _renderable([])
     assert isinstance(result, str)
-    assert "uv run main.py" in result
+    assert "project-registry scan" in result
 
 
 def test_renderable_returns_dashboard_when_populated():

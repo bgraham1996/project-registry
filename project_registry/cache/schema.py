@@ -2,14 +2,14 @@
 
 Statements are idempotent (``CREATE ... IF NOT EXISTS``) so ``Db.init`` can run
 them on every startup, whether the database is brand new or already populated.
-Columns mirror ``app.data_models.watched_dirs.WatchlistItem`` (camelCase attrs
+Columns mirror ``project_registry.data_models.watched_dirs.WatchlistItem`` (camelCase attrs
 map to snake_case columns).
 
 The read side of the registry — what clients *query* — is expressed as SQL
 ``VIEW``s here rather than as query strings buried in one client. A view lives in
 the database file itself, so the planned Python and Go clients read the registry
 through the *same* named contract (``SELECT * FROM v_projects``) instead of each
-re-deriving ad-hoc SQL. Python's read facade is ``app.api.registry.Registry``;
+re-deriving ad-hoc SQL. Python's read facade is ``project_registry.api.registry.Registry``;
 see ``project/design/query-api.md`` for the rationale.
 
 Each ``v_*`` row-view selects the full ``watched_dirs`` column set (so any client

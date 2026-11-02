@@ -5,8 +5,8 @@ This is a *client* in the README's sense — it only ever reads the SQLite DB
 Populating the registry is the scanner's job (``uv run main.py``). Run the view
 with:
 
-    uv run python -m app.ux.tui            # render once and exit
-    uv run python -m app.ux.tui --watch    # live-refresh from the DB until Ctrl-C
+    uv run python -m project_registry.ux.tui            # render once and exit
+    uv run python -m project_registry.ux.tui --watch    # live-refresh from the DB until Ctrl-C
 
 The presentation helpers (:func:`render_table`, :func:`render_summary`,
 :func:`render_dashboard`) are kept pure — data in, ``rich`` renderable out — so
@@ -22,8 +22,8 @@ from rich.rule import Rule
 from rich.table import Table
 from rich import box
 
-from app.api.registry import Registry
-from app.cache.cache_manager import Db
+from project_registry.api.registry import Registry
+from project_registry.cache.cache_manager import Db
 
 # How each lifecycle cycle is coloured, in both the summary bar and the table's
 # Cycle column, so a project's stage reads the same everywhere. ``None`` is the
@@ -125,7 +125,7 @@ def _renderable(items, cycle_counts=None):
     """The dashboard, or a friendly empty-state when nothing has been scanned yet."""
     if items:
         return render_dashboard(items, cycle_counts or {})
-    return "[yellow]No watched dirs yet — run [bold]uv run main.py[/bold] to scan.[/]"
+    return "[yellow]No watched dirs yet — run [bold]project-registry scan[/bold] to scan.[/]"
 
 
 def run(console: Console | None = None) -> None:

@@ -9,10 +9,10 @@ import sqlite3
 
 import pytest
 
-from app.api.registry import Registry
-from app.cache.schema import SCHEMA
-from app.cache.watchlist_repo import WatchlistRepo
-from app.data_models.watched_dirs import WatchlistItem
+from project_registry.api.registry import Registry
+from project_registry.cache.schema import SCHEMA
+from project_registry.cache.watchlist_repo import WatchlistRepo
+from project_registry.data_models.watched_dirs import WatchlistItem
 
 
 def _item(name, *, path=None, dir_type="git", branch="main", cycle=None):

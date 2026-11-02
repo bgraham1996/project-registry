@@ -7,7 +7,7 @@ is deliberately read-only — populating the registry is the scanner's job
 means a client (the TUI, a future HTTP layer) can hold a ``Registry`` without any
 ability to mutate the store.
 
-The queries themselves live as ``v_*`` SQL views in ``app.cache.schema`` so the
+The queries themselves live as ``v_*`` SQL views in ``project_registry.cache.schema`` so the
 planned Go client can read the exact same contract from the same database file;
 each method here is a thin, typed wrapper that returns domain objects rather than
 raw rows. See ``project/design/query-api.md``.
@@ -16,7 +16,7 @@ Construct with a live ``sqlite3.Connection`` whose ``row_factory`` is
 ``sqlite3.Row`` (``Db.init`` sets this), e.g. ``Registry(db.connection)``.
 """
 
-from app.data_models.watched_dirs import WatchlistItem
+from project_registry.data_models.watched_dirs import WatchlistItem
 
 
 class Registry:

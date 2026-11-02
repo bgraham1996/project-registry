@@ -7,7 +7,7 @@ tests never build a DB or walk the real ``~/dev`` tree.
 
 from pathlib import Path
 
-from app.config_service.cnfg import Configure
+from project_registry.config_service.cnfg import Configure
 from main import parse_args, resolve_roots
 
 

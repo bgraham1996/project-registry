@@ -17,7 +17,7 @@ import json
 from collections import deque
 from pathlib import Path
 
-from app.data_models.watched_dirs import WatchlistItem
+from project_registry.data_models.watched_dirs import WatchlistItem
 
 # Sentinel for describe(): distinguishes "argument not passed" (locate it) from
 # an explicit None ("searched, not found") passed by scan(), which must not

@@ -13,14 +13,16 @@ across different filesystem paths and Obsidian vaults. The design intent (from `
 - Two clients are planned against that DB: **one in Python and one in Go**, both querying the
   same local SQLite database.
 
-**Maturity: working first vertical slice, both clients real.** The full pipeline is in place —
-`uv run main.py` scans the configured roots and indexes the projects found into SQLite; a read-only
-query API (`app/api/registry.py`) exposes shared SQL **views**; and three clients read those views: a
-Python `rich` TUI (`app/ux/tui.py`), a Python query CLI (`app/ux/cli.py`), and a Go CLI
-(`clients/go/`). Remaining empty modules
-(`app/data_models/projects.py`, `session_manager.py`, `app/main.py`) are intentional
+**Maturity: working first vertical slice, both clients real, packaged as a uv tool.** The full
+pipeline is in place — `project-registry scan` (installed console command; also `uv run main.py`)
+scans the configured roots and indexes the projects found into SQLite; a read-only query API
+(`project_registry/api/registry.py`) exposes shared SQL **views**; and three clients read those
+views: a Python `rich` TUI (`project_registry/ux/tui.py`), a Python query CLI
+(`project_registry/ux/cli.py`), and a Go CLI (`clients/go/`). The Python scan + query + TUI are now
+unified behind one installable `project-registry` command (subcommands `scan`/`list`/`show`/`cycles`/`tui`). Remaining empty modules
+(`project_registry/data_models/projects.py`, `session_manager.py`, `project_registry/main.py`) are intentional
 future-direction stubs — **keep them**. Design decisions are recorded as Markdown under
-`project/design/` (three ADRs exist); keep adding there as decisions land.
+`project/design/` (six ADRs exist); keep adding there as decisions land.
 
 ## Environment and commands
 
@@ -33,39 +35,50 @@ separate module under `clients/go/` (pure-Go `modernc.org/sqlite`, no cgo).
 
 ```bash
 uv sync                       # create/refresh .venv and install deps
-uv run main.py                # scan configured roots, index projects, list watched dirs
-uv run python -m app.ux.tui   # read-only rich TUI over the registry (--watch to live-refresh)
-uv run python -m app.ux.cli list        # read-only query CLI (list/show/cycles; --git/--cycle/--json)
+uv tool install .             # install `project-registry` on PATH (callable anywhere); --reinstall after changes
+project-registry scan         # index projects (the only writer); --scan-root DIR repeatable, overrides config
+project-registry list         # read-only query (list/show/cycles; --git/--cycle/--project; --json/--csv)
+project-registry tui          # read-only rich dashboard (--watch to live-refresh)
+uv run main.py                # dev smoke test: same scan as `project-registry scan`, run from the checkout
 uv run pytest                 # run the test suite (tests/)
 uv add <pkg>                  # add a runtime dependency
 cd clients/go && go build -o registry . && ./registry   # Go client (-git / -json / -db flags)
 ```
 
+`pyproject.toml` declares a `[build-system]` (hatchling) and a single console script
+(`project-registry = "project_registry.ux.cli:cli"`), so the project is a real installable
+package. `uv tool install .` is the "callable from anywhere" path (uv's `pipx` equivalent: isolated
+venv, executable on PATH); re-run with `--reinstall` to pick up code changes. The subcommands also
+run in-repo via `uv run project-registry …` without installing.
+
 ## Package / import layout (important)
 
-`app/` is treated as **one local library**: it has `app/__init__.py`, and every subpackage uses an
-underscore name with its own `__init__.py` (`app/cache`, `app/config_service`, `app/data_models`).
-Imports are therefore **absolute from the `app` root**, e.g.
-`from app.config_service.cnfg import Configure`. This resolves because scripts run from the repo
-root put the repo root on `sys.path`. If the project is later installed/packaged, declare `app` in
-`pyproject.toml` rather than relying on the run-from-root behavior. **Do not reintroduce
-hyphenated directory names** — they are not importable as Python packages.
+`project_registry/` is treated as **one local library**: it has `project_registry/__init__.py`, and every subpackage uses an
+underscore name with its own `__init__.py` (`project_registry/cache`, `project_registry/config_service`, `project_registry/data_models`).
+Imports are therefore **absolute from the `project_registry` root**, e.g.
+`from project_registry.config_service.cnfg import Configure`. The project is now a real package —
+`pyproject.toml` has a `[build-system]` (hatchling) that ships `project_registry`, so these imports
+resolve both from an install and when run from the repo root (which also puts the root on
+`sys.path`, letting the root `main.py` and `tests/` import `project_registry` directly). **Do not
+reintroduce hyphenated directory names** — they are not importable as Python packages. (The
+distribution name on PyPI-style metadata is still the hyphenated `project-registry`; only the
+*import* package is underscored.)
 
 ## Layout and current state
 
-- `main.py` (root) — working entry point / smoke test: builds `Db`, calls `init()` (create-or-open
-  + schema), then via `WatchlistRepo` idempotently `upsert`s an entry for this repo and prints
-  all watched dirs. Running it writes a real row to `~/.config/dev-reg/registry.db`. Takes a
-  repeatable `--scan-root DIR` flag (stdlib `argparse`) that **overrides** the configured
-  `scan_roots` when given (else falls back to config); `~` is expanded. The pure `resolve_roots`
-  helper (config + CLI roots → root list) is unit-tested in `tests/test_main.py`.
-- `app/` — core library.
-  - `app/config_service/cnfg.py` — `Configure`: `default()` seeds `{db_dir: ~/.config/dev-reg,
+- `main.py` (root) — dev smoke test / run-from-checkout scan entry point: a thin `argparse` shim
+  (repeatable `--scan-root DIR`, `~` expanded, **overrides** configured `scan_roots` when given) that
+  delegates to `project_registry.ux.scan.run_scan`. The real scan logic no longer lives here — it
+  moved into the package so the installed `project-registry scan` command and `uv run main.py` share
+  one implementation. Running either writes real rows to `~/.config/dev-reg/registry.db`. `parse_args`
+  is still unit-tested in `tests/test_main.py` (which imports `resolve_roots` re-exported from `main`).
+- `project_registry/` — core library.
+  - `project_registry/config_service/cnfg.py` — `Configure`: `default()` seeds `{db_dir: ~/.config/dev-reg,
     db_name: registry.db}`, `fig()` returns the dict, `db_path()` returns the expanded `Path`.
-  - `app/cache/cache_manager.py` — `Db`: `init()` ensures the parent dir exists, connects via
+  - `project_registry/cache/cache_manager.py` — `Db`: `init()` ensures the parent dir exists, connects via
     `sqlite3` (creating the file if absent), applies the schema idempotently via `create_tables()`,
     and returns whether it pre-existed; `close()` tears down. Uses `sqlite3.Row` row factory.
-  - `app/cache/schema.py` — central `SCHEMA` list of idempotent DDL (`CREATE ... IF NOT EXISTS`):
+  - `project_registry/cache/schema.py` — central `SCHEMA` list of idempotent DDL (`CREATE ... IF NOT EXISTS`):
     the `watched_dirs` table (columns mirror `WatchlistItem`, camelCase → snake_case, including
     `tags`/`notes`), an index on `project_name`, and the read **views** `v_projects` /
     `v_git_projects` (full column set, filter/order only) and `v_cycle_counts` (rollup). Also holds
@@ -73,18 +86,18 @@ hyphenated directory names** — they are not importable as Python packages.
     `create_tables()`, each tolerant of "duplicate column" so a fresh DB and an old DB converge.
     Add new tables/indexes/views here; `init()` applies them on startup. Changing a view *body* or an
     existing column has **no** migration path yet (additive columns only) — a known gap.
-  - `app/cache/watchlist_repo.py` — `WatchlistRepo(connection)`: persistence for the
+  - `project_registry/cache/watchlist_repo.py` — `WatchlistRepo(connection)`: persistence for the
     `watched_dirs` table. `insert(item)` (raises on duplicate `path`) and `upsert(item)`
     (idempotent on `path` — updates in place, keeps the existing row's `id`/`created_at`, bumps
     `updated_at`, returns the stored id), plus queries `get(id)`, `get_by_path(path)`,
     `find_by_project(name)`, `all()` — each returns `WatchlistItem`(s) or `None`. SQL lives here,
     not in the model or `Db`.
-  - `app/data_models/watched_dirs.py` — `WatchlistItem` (a tracked project dir: `path`,
+  - `project_registry/data_models/watched_dirs.py` — `WatchlistItem` (a tracked project dir: `path`,
     `metadatapath`, `configpath`, `gitpath`, plus project/branch/cycle metadata and `tags`/`notes`).
     Owns the row mapping: `to_row()` (attrs -> columns, camelCase -> snake_case) and
     `from_row(row)` (classmethod, the inverse). `session_manager.py` and `projects.py` are still
     empty (intentional stubs).
-  - `app/scanner/scanner.py` — `Scanner(repo, roots)`: the indexer. Descends **only** the explicit
+  - `project_registry/scanner/scanner.py` — `Scanner(repo, roots)`: the indexer. Descends **only** the explicit
     `scan_roots` from config (never the whole filesystem), treats each root's immediate subdirs as
     candidate projects, and `upsert`s a `WatchlistItem` for each. Detection is cheap and
     side-effect-free: `.git` marker + current branch read straight from `.git/HEAD` (no subprocess),
@@ -96,28 +109,34 @@ hyphenated directory names** — they are not importable as Python packages.
     runs `locate` **once** per candidate and reuses the paths for both the track gate and `describe`.
     All parsing is defensive: a bad/empty/malformed file never raises. See
     `project/design/{metadata,config}-schema.md` and `project/design/file-discovery.md`.
-  - `app/api/registry.py` — `Registry(connection)`: **read-only** query facade over the `v_*` views.
+  - `project_registry/ux/scan.py` — the indexer as an importable routine: `resolve_roots(config,
+    cli_roots)` (pure; CLI roots override config, `~` expanded) and `run_scan(cli_roots, echo)` (builds
+    `Db`, resolves roots, runs `Scanner`, reports via the injected `echo`). This is the **one write
+    path** and the shared implementation behind both `project-registry scan` and `uv run main.py`.
+  - `project_registry/api/registry.py` — `Registry(connection)`: **read-only** query facade over the `v_*` views.
     Methods (`projects`, `git_projects`, `by_cycle`, `by_project`, `get_by_path`, `cycle_counts`)
     are thin typed wrappers returning `WatchlistItem`s / aggregates. Reads only — writes stay on
     `WatchlistRepo`, so a client holding a `Registry` cannot mutate the store. See
     `project/design/query-api.md`.
-  - `app/ux/tui.py` — read-only `rich` TUI client over `Registry`, rendered as a single-screen
+  - `project_registry/ux/tui.py` — read-only `rich` TUI client over `Registry`, rendered as a single-screen
     dashboard: a title `Rule`, a `cycle × count` summary bar (from `Registry.cycle_counts`), and a
     rounded table (Project / Type / Branch / Cycle / Tags / Path, with git-vs-dir glyphs and
     cycle colouring from the shared `CYCLE_STYLES` map). The render helpers (`render_summary`,
     `render_table`, `render_dashboard`) are all **pure** — data in, `rich` renderable out — so the
-    whole view is tested without a DB or terminal; `--watch` live-refreshes. `app/main.py` is still
+    whole view is tested without a DB or terminal; `--watch` live-refreshes. `project_registry/main.py` is still
     an empty stub.
-  - `app/ux/cli.py` — read-only **query CLI** (`click`) — the command-line sibling of the TUI, for
-    one-shot lookups against an already-scanned registry (scanning stays on `main.py`). Opens the DB
-    `mode=ro` (same read-only contract as the Go client), talks only to `Registry`. Commands: `list`
-    (`--git` / `--cycle` / `--project`, plus output `--json` **or** `--csv` — mutually exclusive; the
-    filters compose), `show <path>` (`--json`), `cycles` (`--json`); global `--db` overrides the DB
-    path. `--csv` emits RFC-4180 CSV to stdout (redirect to a file) with columns driven off the same
-    `_item_dict` as `--json` so the two never drift; `tags` (a list) is flattened to a `;`-joined
-    cell. The `format_*` / `render_detail` helpers are **pure**, and it reuses the TUI's
-    `render_table` / `render_summary` so both clients render identically. Run via
-    `uv run python -m app.ux.cli`.
+  - `project_registry/ux/cli.py` — the **`project-registry` command** (`click` group; the single
+    console-script entry point in `pyproject.toml`). One command groups every Python surface:
+    `scan` (the write path — delegates to `scan.run_scan`), the read commands `list` / `show` /
+    `cycles`, and `tui` (delegates to `tui.run`/`tui.watch`). The read commands open the DB `mode=ro`
+    (same read-only contract as the Go client) and talk only to `Registry`, so a query can never
+    write. `list` takes `--git` / `--cycle` / `--project` (filters compose) plus output `--json`
+    **or** `--csv` (mutually exclusive); `show <path>` / `cycles` take `--json`; global `--db`
+    overrides the DB path for the read commands. `--csv` emits RFC-4180 CSV to stdout with columns
+    driven off the same `_item_dict` as `--json` so the two never drift; `tags` (a list) is flattened
+    to a `;`-joined cell. The `format_*` / `render_detail` helpers are **pure**, and it reuses the
+    TUI's `render_table` / `render_summary` so every client renders identically. Run installed as
+    `project-registry …`, or in-repo via `uv run project-registry …`.
 - `clients/go/` — the Go client: a **separate Go module** (`go.mod`, `main.go`, `README.md`),
   read-only over the **same** SQLite file and the **same** `v_*` views the Python side uses. Pure-Go
   `modernc.org/sqlite` (no cgo); opens the DB `mode=ro`; `-git` / `-json` / `-db` flags.
@@ -133,7 +152,7 @@ hyphenated directory names** — they are not importable as Python packages.
 
 - **The empty `cngf.py` (next to the real `cnfg.py`) and the `fig()` accessor name are canonical**,
   not slips — confirmed with the user; leave them. More broadly, the empty stub files/dirs
-  (`app/main.py`, `app/data_models/{projects,session_manager}.py`, etc.) are intentional
+  (`project_registry/main.py`, `project_registry/data_models/{projects,session_manager}.py`, etc.) are intentional
   future-direction markers — do **not** delete them "cleaning up".
 - **Design docs are ADRs (point-in-time).** A later doc may supersede an earlier one — e.g.
   `metadata-schema.md` says `config.json` is "recorded by path only / not parsed", which

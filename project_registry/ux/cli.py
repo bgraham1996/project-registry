@@ -1,25 +1,28 @@
-"""Read-only query CLI over the registry — the command-line sibling of the TUI.
+"""The ``project-registry`` command — one click app over the whole registry.
 
-Where ``main.py`` is the *indexer* (it scans the configured roots and writes rows
-via the scanner) and ``app.ux.tui`` is the always-on dashboard, this is the
-*query* client: a ``click`` CLI for one-shot lookups against a registry that has
-already been scanned. It only ever reads — it opens the SQLite file ``mode=ro``
-(the same read-only contract the Go client uses) and talks to the read-only
-:class:`Registry` query API, so a query can never mutate the store. Scanning
-stays entirely on ``main.py``.
+This is the single installed entry point (``project-registry``, declared in
+``pyproject.toml`` and installable anywhere via ``uv tool install .``). It groups
+the one *write* path and every *read* path as subcommands:
 
-    uv run python -m app.ux.cli list                 # every watched dir, as a table
-    uv run python -m app.ux.cli list --git           # only git checkouts
-    uv run python -m app.ux.cli list --cycle active   # filter by lifecycle cycle
-    uv run python -m app.ux.cli list --json          # machine-readable output
-    uv run python -m app.ux.cli list --csv > out.csv # spreadsheet-friendly export
-    uv run python -m app.ux.cli show ~/dev/rosmerta  # detail for one watched dir
-    uv run python -m app.ux.cli cycles               # cycle × count rollup
+    project-registry scan [--scan-root DIR ...]   # index projects (the only writer)
+    project-registry list                          # every watched dir, as a table
+    project-registry list --git                    # only git checkouts
+    project-registry list --cycle active           # filter by lifecycle cycle
+    project-registry list --json                   # machine-readable output
+    project-registry list --csv > out.csv          # spreadsheet-friendly export
+    project-registry show ~/dev/rosmerta           # detail for one watched dir
+    project-registry cycles                        # cycle × count rollup
+    project-registry tui [--watch]                 # live rich dashboard
 
-The presentation is kept pure the same way the TUI is: the ``format_*`` /
-``render_detail`` helpers take data and return a string or a ``rich`` renderable,
-so the whole surface is testable without a terminal, and the table/summary views
-are simply reused from :mod:`app.ux.tui` so both clients render identically.
+``scan`` is the only subcommand that mutates the store (it delegates to
+:func:`project_registry.ux.scan.run_scan`). Every query subcommand opens the
+SQLite file ``mode=ro`` (the same read-only contract the Go client uses) and talks
+to the read-only :class:`Registry` query API, so a query can never write.
+
+The presentation is kept pure: the ``format_*`` / ``render_detail`` helpers take
+data and return a string or a ``rich`` renderable, so the whole surface is testable
+without a terminal, and the table/summary/dashboard views are reused from
+:mod:`project_registry.ux.tui` so every client renders identically.
 """
 
 import csv
@@ -32,10 +35,18 @@ from pathlib import Path
 import click
 from rich.console import Console
 
-from app.api.registry import Registry
-from app.config_service.cnfg import Configure
-from app.data_models.watched_dirs import WatchlistItem
-from app.ux.tui import _cycle_label, _cycle_style, render_summary, render_table
+from project_registry.api.registry import Registry
+from project_registry.config_service.cnfg import Configure
+from project_registry.data_models.watched_dirs import WatchlistItem
+from project_registry.ux.scan import run_scan
+from project_registry.ux.tui import (
+    _cycle_label,
+    _cycle_style,
+    render_summary,
+    render_table,
+    run as tui_run,
+    watch as tui_watch,
+)
 
 
 # --- opening the store (read-only) ------------------------------------------
@@ -58,7 +69,7 @@ def open_registry(db_path=None):
     path = Path(db_path).expanduser() if db_path else _default_db_path()
     if not path.exists():
         raise click.ClickException(
-            f"No registry database at {path} — run `uv run main.py` to scan first."
+            f"No registry database at {path} — run `project-registry scan` to scan first."
         )
     connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
@@ -155,7 +166,7 @@ def render_detail(item):
 
 # --- commands ---------------------------------------------------------------
 
-@click.group(help="Read-only query CLI over the project registry.")
+@click.group(help="Scan and query your local dev-project registry (scan writes; all other commands are read-only).")
 @click.option(
     "--db",
     "db_path",
@@ -165,6 +176,22 @@ def render_detail(item):
 @click.pass_context
 def cli(ctx, db_path):
     ctx.obj = {"db_path": db_path}
+
+
+@cli.command(help="Scan the configured roots and index the projects found (the only writer).")
+@click.option(
+    "--scan-root",
+    "scan_roots",
+    multiple=True,
+    metavar="DIR",
+    help=(
+        "Directory whose immediate subdirectories are candidate projects. "
+        "Repeatable. Overrides the configured scan roots when given. ~ is expanded."
+    ),
+)
+def scan(scan_roots):
+    # multiple=() when unset -> None so run_scan falls back to the configured roots.
+    run_scan(list(scan_roots) or None, echo=click.echo)
 
 
 @cli.command(name="list", help="List watched dirs (optionally filtered).")
@@ -226,6 +253,16 @@ def cycles(ctx, as_json):
         click.echo(format_cycle_counts_json(counts))
     else:
         Console().print(render_summary(counts))
+
+
+@cli.command(help="Live rich dashboard view of the registry.")
+@click.option("--watch", "-w", is_flag=True, help="live-refresh until Ctrl-C (default: render once).")
+@click.option("--interval", default=2.0, type=float, help="seconds between refreshes in --watch mode.")
+def tui(watch, interval):
+    if watch:
+        tui_watch(interval=interval)
+    else:
+        tui_run()
 
 
 if __name__ == "__main__":

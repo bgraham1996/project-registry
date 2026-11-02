@@ -1,8 +1,8 @@
 import sqlite3
 from pathlib import Path
 
-from app.config_service.cnfg import Configure
-from app.cache.schema import MIGRATIONS, SCHEMA
+from project_registry.config_service.cnfg import Configure
+from project_registry.cache.schema import MIGRATIONS, SCHEMA
 
 
 class Db:

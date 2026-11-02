@@ -1,13 +1,25 @@
 [project]
 name = "project-registry"
 version = "0.1.0"
-description = "Add your description here"
+description = "Local SQLite-backed registry of your dev projects, with a scan indexer and read-only query clients."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "click>=8.5.0",
     "rich>=15.0.0",
 ]
+
+[project.scripts]
+# The single installable entry point. `uv tool install .` puts `project-registry`
+# on PATH; subcommands: scan (write), list/show/cycles (read), tui.
+project-registry = "project_registry.ux.cli:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["project_registry"]
 
 [dependency-groups]
 dev = [

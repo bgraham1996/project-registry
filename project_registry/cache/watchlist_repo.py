@@ -5,7 +5,7 @@ Construct with a live ``sqlite3.Connection`` that has ``row_factory`` set to
 ``sqlite3.Row`` (``Db.init`` does this), e.g. ``WatchlistRepo(db.connection)``.
 """
 
-from app.data_models.watched_dirs import WatchlistItem
+from project_registry.data_models.watched_dirs import WatchlistItem
 
 
 class WatchlistRepo:
