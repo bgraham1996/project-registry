@@ -4,7 +4,7 @@ The Go half of project-registry's "two clients, one Python and one Go". A small,
 **read-only** CLI that opens the same local SQLite database the scanner writes
 and reads it through the same shared SQL views the Python `Registry` uses
 (`v_projects`, `v_git_projects`) — no client-specific SQL, no writes. Populating
-the registry is the scanner's job (`uv run main.py` from the repo root).
+the registry is the scanner's job (`project-registry scan`, or `uv run main.py` from the repo root).
 
 ## Build & run
 
@@ -19,7 +19,7 @@ go build -o registry .
 ```
 
 By default it reads `~/.config/dev-reg/registry.db` (the same path
-`app/config_service/cnfg.py` computes). A missing database is reported as
+`project_registry/config_service/cnfg.py` computes). A missing database is reported as
 "run the scanner first" rather than silently created — the DB is opened
 read-only (`mode=ro`).
 
