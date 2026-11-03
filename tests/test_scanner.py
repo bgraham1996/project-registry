@@ -454,3 +454,79 @@ def test_candidates_skips_ignored_dirs(tmp_path):
     }
 
     assert names == {"one"}
+
+
+# --- doctor: metadata health ------------------------------------------------
+
+def test_diagnose_missing_metadata(tmp_path):
+    project = tmp_path / "nometa"
+    project.mkdir()
+    diag = Scanner(repo=None, roots=[]).diagnose(project)
+    assert diag.status == "missing"
+    assert diag.detail == "" and diag.missing_fields == []
+
+
+def test_diagnose_empty_metadata(tmp_path):
+    project = tmp_path / "blank"
+    project.mkdir()
+    (project / "metadata.json").write_text("   \n")  # whitespace only
+    diag = Scanner(repo=None, roots=[]).diagnose(project)
+    assert diag.status == "empty"
+
+
+def test_diagnose_invalid_metadata_carries_the_error(tmp_path):
+    project = tmp_path / "broken"
+    project.mkdir()
+    (project / "metadata.json").write_text("{ not json ]")
+    diag = Scanner(repo=None, roots=[]).diagnose(project)
+    assert diag.status == "invalid"
+    assert diag.detail  # a non-empty parse-error message
+
+    # a parseable file whose top level isn't an object is also invalid
+    (project / "metadata.json").write_text(json.dumps(["a", "list"]))
+    diag = Scanner(repo=None, roots=[]).diagnose(project)
+    assert diag.status == "invalid"
+    assert "object" in diag.detail
+
+
+def test_diagnose_ok_reports_absent_health_fields(tmp_path):
+    project = tmp_path / "thin"
+    project.mkdir()
+    (project / "metadata.json").write_text(json.dumps({"name": "Thin", "version": "1.0"}))
+    diag = Scanner(repo=None, roots=[]).diagnose(project)
+    assert diag.status == "ok"
+    assert diag.missing_fields == ["cycle", "tags"]  # order follows HEALTH_FIELDS
+
+
+def test_diagnose_ok_complete_has_no_missing_fields(tmp_path):
+    project = tmp_path / "full"
+    project.mkdir()
+    (project / "metadata.json").write_text(
+        json.dumps({"cycle": "active", "tags": ["x"]})
+    )
+    diag = Scanner(repo=None, roots=[]).diagnose(project)
+    assert diag.status == "ok"
+    assert diag.missing_fields == []
+
+
+def test_diagnose_tags_must_hold_a_scalar_to_count(tmp_path):
+    project = tmp_path / "emptytags"
+    project.mkdir()
+    # tags present but with no usable scalar -> still counts as absent
+    (project / "metadata.json").write_text(json.dumps({"cycle": "idea", "tags": [{"x": 1}]}))
+    diag = Scanner(repo=None, roots=[]).diagnose(project)
+    assert diag.missing_fields == ["tags"]
+
+
+def test_diagnose_all_covers_candidates_and_honors_ignore(tmp_path):
+    make_git_project(tmp_path, "one")
+    (tmp_path / "two").mkdir()
+    (tmp_path / "two" / "metadata.json").write_text(json.dumps({"cycle": "active", "tags": ["t"]}))
+    (tmp_path / "archive").mkdir()  # ignored
+
+    diagnoses = Scanner(repo=None, roots=[tmp_path], ignore=["archive"]).diagnose_all()
+    by_name = {d.name: d for d in diagnoses}
+
+    assert set(by_name) == {"one", "two"}  # archive excluded
+    assert by_name["one"].status == "missing"
+    assert by_name["two"].status == "ok" and by_name["two"].missing_fields == []

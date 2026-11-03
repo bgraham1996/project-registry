@@ -14,7 +14,7 @@ highest-level ``metadata.json`` / ``config.json``, plus a single read of
 """
 
 import json
-from collections import deque
+from collections import deque, namedtuple
 from pathlib import Path
 
 from project_registry.data_models.watched_dirs import WatchlistItem
@@ -23,6 +23,12 @@ from project_registry.data_models.watched_dirs import WatchlistItem
 # an explicit None ("searched, not found") passed by scan(), which must not
 # trigger a second walk of the same tree.
 _UNSET = object()
+
+# One project's metadata-file health, as reported by `doctor`. ``status`` is one
+# of "ok" / "missing" / "empty" / "invalid"; ``detail`` carries the parse error
+# (invalid only); ``missing_fields`` lists enrichment fields absent from an
+# otherwise-ok file (see Scanner.HEALTH_FIELDS).
+Diagnosis = namedtuple("Diagnosis", ["name", "path", "status", "detail", "missing_fields"])
 
 
 class Scanner:
@@ -275,6 +281,63 @@ class Scanner:
         if not isinstance(data, dict):
             return True
         return data.get("track") is not False
+
+    # Enrichment fields `doctor` nudges you to add: present in metadata.json, they
+    # light up the dashboard (cycle grouping, tag display). Absent ones are
+    # reported for an otherwise-ok file — they are not errors.
+    HEALTH_FIELDS = ("cycle", "tags")
+
+    def diagnose_all(self) -> list[Diagnosis]:
+        """Report metadata-file health for every candidate under the roots.
+
+        Read-only: inspects the on-disk ``metadata.json`` of each candidate (same
+        discovery + ignore rules as :meth:`scan`) without touching the registry.
+        Does not apply the ``track`` gate — it reports on what is on disk.
+        """
+        return [self.diagnose(candidate) for candidate in self.candidates()]
+
+    def diagnose(self, candidate: Path) -> Diagnosis:
+        """Classify one candidate's highest-level ``metadata.json``.
+
+        ``missing`` (no file found), ``empty`` (file present but blank),
+        ``invalid`` (unreadable, bad JSON, or a non-object top level — ``detail``
+        holds the reason), or ``ok`` (parses as an object; ``missing_fields`` lists
+        any :data:`HEALTH_FIELDS` it lacks). This is where "file failed to parse"
+        is kept distinct from "no metadata", which :meth:`read_json` collapses.
+        """
+        name, path = candidate.name, str(candidate)
+        metadata_path = self.locate(candidate).get("metadata.json")
+        if metadata_path is None:
+            return Diagnosis(name, path, "missing", "", [])
+        try:
+            text = metadata_path.read_text()
+        except OSError as exc:
+            return Diagnosis(name, path, "invalid", f"unreadable: {exc}", [])
+        if not text.strip():
+            return Diagnosis(name, path, "empty", "", [])
+        try:
+            data = json.loads(text)
+        except ValueError as exc:
+            return Diagnosis(name, path, "invalid", str(exc), [])
+        if not isinstance(data, dict):
+            return Diagnosis(name, path, "invalid", "top-level JSON is not an object", [])
+        missing = [f for f in self.HEALTH_FIELDS if not self._metadata_has_field(data, f)]
+        return Diagnosis(name, path, "ok", "", missing)
+
+    @staticmethod
+    def _metadata_has_field(data: dict, field: str) -> bool:
+        """Whether ``field`` holds a value :meth:`apply_metadata` would actually store.
+
+        Mirrors that method's coercion rules so `doctor` and the real scan agree on
+        what counts as "set": a scalar (``bool`` excluded) for most fields, and a
+        list with at least one scalar for ``tags``.
+        """
+        value = data.get(field)
+        if field == "tags":
+            return isinstance(value, list) and any(
+                isinstance(t, (str, int, float)) and not isinstance(t, bool) for t in value
+            )
+        return isinstance(value, (str, int, float)) and not isinstance(value, bool)
 
     @staticmethod
     def read_json(path: Path):

@@ -22,7 +22,7 @@ views: a Python `rich` TUI (`project_registry/ux/tui.py`), a Python query CLI
 unified behind one installable `project-registry` command (subcommands `scan`/`list`/`show`/`cycles`/`tui`). Remaining empty modules
 (`project_registry/data_models/projects.py`, `session_manager.py`, `project_registry/main.py`) are intentional
 future-direction stubs — **keep them**. Design decisions are recorded as Markdown under
-`project/design/` (seven ADRs exist); keep adding there as decisions land.
+`project/design/` (eight ADRs exist); keep adding there as decisions land.
 
 ## Environment and commands
 
@@ -38,6 +38,7 @@ uv sync                       # create/refresh .venv and install deps
 uv tool install .             # install `project-registry` on PATH (callable anywhere); --reinstall after changes
 project-registry scan         # index projects (the only writer); --scan-root DIR repeatable, overrides config
 project-registry list         # read-only query (list/show/cycles; --git/--cycle/--project; --json/--csv)
+project-registry doctor       # read-only metadata-file health report (missing/empty/invalid/ok + absent fields)
 project-registry tui          # read-only rich dashboard (--watch to live-refresh)
 uv run main.py                # dev smoke test: same scan as `project-registry scan`, run from the checkout
 uv run pytest                 # run the test suite (tests/)
@@ -121,6 +122,11 @@ distribution name on PyPI-style metadata is still the hyphenated `project-regist
     hard-deleted, hidden from the views. All parsing is defensive: a bad/empty/malformed file never
     raises. See `project/design/{metadata,config}-schema.md`, `file-discovery.md`, and
     `lifecycle-and-ignore.md` (the current source of truth for the metadata/config split + lifecycle).
+    Also exposes a read-only **health check** for `doctor`: `diagnose(candidate)` → a `Diagnosis`
+    namedtuple classifying the candidate's `metadata.json` as `missing` / `empty` / `invalid` (with the
+    parse error, kept distinct from "missing" — which `read_json` collapses) / `ok` (listing absent
+    `HEALTH_FIELDS` = `cycle`/`tags`), and `diagnose_all()` over all candidates. See
+    `project/design/doctor-metadata-health.md`.
   - `project_registry/ux/scan.py` — the indexer as an importable routine: `resolve_roots(config,
     cli_roots)` (pure; CLI roots override config, `~` expanded) and `run_scan(cli_roots, echo)` (builds
     `Db`, resolves roots, runs `Scanner`, reports via the injected `echo`). This is the **one write
@@ -140,11 +146,13 @@ distribution name on PyPI-style metadata is still the hyphenated `project-regist
   - `project_registry/ux/cli.py` — the **`project-registry` command** (`click` group; the single
     console-script entry point in `pyproject.toml`). One command groups every Python surface:
     `scan` (the write path — delegates to `scan.run_scan`), the read commands `list` / `show` /
-    `cycles`, and `tui` (delegates to `tui.run`/`tui.watch`). The read commands open the DB `mode=ro`
-    (same read-only contract as the Go client) and talk only to `Registry`, so a query can never
-    write. `list` takes `--git` / `--cycle` / `--project` (filters compose) plus output `--json`
-    **or** `--csv` (mutually exclusive); `show <path>` / `cycles` take `--json`; global `--db`
-    overrides the DB path for the read commands. `--csv` emits RFC-4180 CSV to stdout with columns
+    `cycles`, `doctor` (metadata-file health report), and `tui` (delegates to `tui.run`/`tui.watch`).
+    The `list`/`show`/`cycles` read commands open the DB `mode=ro` (same read-only contract as the Go
+    client) and talk only to `Registry`, so a query can never write; `doctor` reads the project files
+    on disk (via `Scanner.diagnose_all`), not the DB. `list` takes `--git` / `--cycle` / `--project`
+    (filters compose) plus output `--json` **or** `--csv` (mutually exclusive); `show <path>` /
+    `cycles` / `doctor` take `--json` (`doctor` also takes `--scan-root`); global `--db`
+    overrides the DB path for the DB-backed read commands. `--csv` emits RFC-4180 CSV to stdout with columns
     driven off the same `_item_dict` as `--json` so the two never drift; `tags` (a list) is flattened
     to a `;`-joined cell. The `format_*` / `render_detail` helpers are **pure**, and it reuses the
     TUI's `render_table` / `render_summary` so every client renders identically. Run installed as

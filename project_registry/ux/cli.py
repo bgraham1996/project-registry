@@ -12,6 +12,7 @@ the one *write* path and every *read* path as subcommands:
     project-registry list --csv > out.csv          # spreadsheet-friendly export
     project-registry show ~/dev/rosmerta           # detail for one watched dir
     project-registry cycles                        # cycle × count rollup
+    project-registry doctor                        # metadata-file health report
     project-registry tui [--watch]                 # live rich dashboard
 
 ``scan`` is the only subcommand that mutates the store (it delegates to
@@ -38,7 +39,8 @@ from rich.console import Console
 from project_registry.api.registry import Registry
 from project_registry.config_service.cnfg import Configure
 from project_registry.data_models.watched_dirs import WatchlistItem
-from project_registry.ux.scan import run_scan
+from project_registry.scanner.scanner import Scanner
+from project_registry.ux.scan import resolve_roots, run_scan
 from project_registry.ux.tui import (
     _cycle_label,
     _cycle_style,
@@ -164,6 +166,77 @@ def render_detail(item):
     return grid
 
 
+# --- doctor (metadata health) ----------------------------------------------
+
+# status -> rich style. "ok" is calm; "invalid" is the only hard problem.
+_DOCTOR_STATUS_STYLES = {
+    "ok": "green",
+    "missing": "yellow",
+    "empty": "yellow",
+    "invalid": "red",
+}
+
+
+def _doctor_issue(diag) -> str:
+    """The human-facing 'issue' cell for one diagnosis. Pure."""
+    if diag.status == "invalid":
+        return diag.detail or "invalid"
+    if diag.status == "missing":
+        return "no metadata.json"
+    if diag.status == "empty":
+        return "metadata.json is empty"
+    if diag.missing_fields:  # ok, but under-filled
+        return "no " + ", no ".join(diag.missing_fields)
+    return "-"
+
+
+def format_doctor_json(diagnoses) -> str:
+    """Diagnoses as a pretty JSON array. Pure."""
+    return json.dumps(
+        [
+            {
+                "project": d.name,
+                "path": d.path,
+                "status": d.status,
+                "detail": d.detail,
+                "missingFields": list(d.missing_fields),
+            }
+            for d in diagnoses
+        ],
+        indent=2,
+    )
+
+
+def doctor_summary(diagnoses) -> str:
+    """A one-line count bar across statuses (zero buckets omitted). Pure."""
+    counts = {}
+    for d in diagnoses:
+        counts[d.status] = counts.get(d.status, 0) + 1
+    parts = [
+        f"[{_DOCTOR_STATUS_STYLES.get(status, 'white')}]{counts[status]} {status}[/]"
+        for status in ("ok", "invalid", "empty", "missing")
+        if counts.get(status)
+    ]
+    return "  ".join(parts) if parts else "[dim]no projects found[/]"
+
+
+def render_doctor(diagnoses):
+    """A table of per-project metadata health. Pure: data in, renderable out."""
+    from rich.table import Table
+
+    table = Table(box=None, pad_edge=False)
+    table.add_column("Project", style="bold", no_wrap=True)
+    table.add_column("Status")
+    table.add_column("Issue", overflow="fold")
+    table.add_column("Path", style="dim", overflow="fold")
+    for d in diagnoses:
+        style = _DOCTOR_STATUS_STYLES.get(d.status, "white")
+        issue = _doctor_issue(d)
+        issue_markup = issue if d.status in ("ok", "missing") else f"[{style}]{issue}[/]"
+        table.add_row(d.name, f"[{style}]{d.status}[/]", issue_markup, d.path)
+    return table
+
+
 # --- commands ---------------------------------------------------------------
 
 @click.group(help="Scan and query your local dev-project registry (scan writes; all other commands are read-only).")
@@ -253,6 +326,32 @@ def cycles(ctx, as_json):
         click.echo(format_cycle_counts_json(counts))
     else:
         Console().print(render_summary(counts))
+
+
+@cli.command(help="Report metadata-file health for each project under the scan roots.")
+@click.option(
+    "--scan-root",
+    "scan_roots",
+    multiple=True,
+    metavar="DIR",
+    help="Root whose immediate subdirs to check. Repeatable. Overrides the configured roots. ~ expanded.",
+)
+@click.option("--json", "-j", "as_json", is_flag=True, help="emit JSON instead of a table.")
+def doctor(scan_roots, as_json):
+    # Reads the project files on disk, not the registry DB (the global --db is not
+    # used here); honours the same scan roots + ignore list as `scan`.
+    config = Configure()
+    config.default()
+    roots = resolve_roots(config, list(scan_roots) or None)
+    scanner = Scanner(repo=None, roots=roots, ignore=config.ignore())
+    diagnoses = scanner.diagnose_all()
+
+    if as_json:
+        click.echo(format_doctor_json(diagnoses))
+    else:
+        console = Console()
+        console.print(doctor_summary(diagnoses))
+        console.print(render_doctor(diagnoses))
 
 
 @cli.command(help="Live rich dashboard view of the registry.")

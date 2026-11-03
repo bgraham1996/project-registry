@@ -17,9 +17,12 @@ from click.testing import CliRunner
 from project_registry.cache.schema import SCHEMA
 from project_registry.cache.watchlist_repo import WatchlistRepo
 from project_registry.data_models.watched_dirs import WatchlistItem
+from project_registry.scanner.scanner import Diagnosis
 from project_registry.ux.cli import (
     cli,
+    doctor_summary,
     format_cycle_counts_json,
+    format_doctor_json,
     format_items_csv,
     format_items_json,
     render_detail,
@@ -204,3 +207,78 @@ def test_missing_db_is_friendly(tmp_path):
     result = _run(tmp_path / "does-not-exist.db", "list")
     assert result.exit_code != 0
     assert "run `project-registry scan`" in result.output
+
+
+# --- doctor (pure formatters) -----------------------------------------------
+
+def _diag(name, status, detail="", missing=()):
+    return Diagnosis(name, f"/dev/{name}", status, detail, list(missing))
+
+
+def test_doctor_summary_counts_and_omits_zero_buckets():
+    diagnoses = [
+        _diag("a", "ok"),
+        _diag("b", "ok"),
+        _diag("c", "invalid", detail="boom"),
+        _diag("d", "missing"),
+    ]
+    summary = doctor_summary(diagnoses)
+    assert "2 ok" in summary
+    assert "1 invalid" in summary
+    assert "1 missing" in summary
+    assert "empty" not in summary  # zero bucket omitted
+
+
+def test_format_doctor_json_shape():
+    diagnoses = [
+        _diag("ok1", "ok", missing=["cycle"]),
+        _diag("bad", "invalid", detail="Expecting value"),
+    ]
+    payload = json.loads(format_doctor_json(diagnoses))
+    assert payload[0] == {
+        "project": "ok1",
+        "path": "/dev/ok1",
+        "status": "ok",
+        "detail": "",
+        "missingFields": ["cycle"],
+    }
+    assert payload[1]["status"] == "invalid"
+    assert payload[1]["detail"] == "Expecting value"
+
+
+# --- doctor (command, against a real on-disk tree) --------------------------
+
+def test_doctor_command_reports_per_project(tmp_path):
+    # a tree of candidate projects with varied metadata health
+    (tmp_path / "good").mkdir()
+    (tmp_path / "good" / "metadata.json").write_text(
+        json.dumps({"cycle": "active", "tags": ["x"]})
+    )
+    (tmp_path / "thin").mkdir()
+    (tmp_path / "thin" / "metadata.json").write_text(json.dumps({"name": "Thin"}))
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "metadata.json").write_text("{ not json ]")
+    (tmp_path / "none").mkdir()
+    (tmp_path / "archive").mkdir()  # ignored by default config
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["doctor", "--scan-root", str(tmp_path), "--json"])
+    assert result.exit_code == 0, result.output
+
+    by_name = {d["project"]: d for d in json.loads(result.output)}
+    assert set(by_name) == {"good", "thin", "broken", "none"}  # archive excluded
+    assert by_name["good"]["status"] == "ok" and by_name["good"]["missingFields"] == []
+    assert by_name["thin"]["status"] == "ok"
+    assert by_name["thin"]["missingFields"] == ["cycle", "tags"]
+    assert by_name["broken"]["status"] == "invalid" and by_name["broken"]["detail"]
+    assert by_name["none"]["status"] == "missing"
+
+
+def test_doctor_command_table_renders(tmp_path):
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "metadata.json").write_text("{ bad ]")
+
+    result = CliRunner().invoke(cli, ["doctor", "--scan-root", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "broken" in result.output
+    assert "invalid" in result.output
