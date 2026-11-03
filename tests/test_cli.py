@@ -282,3 +282,21 @@ def test_doctor_command_table_renders(tmp_path):
     assert result.exit_code == 0, result.output
     assert "broken" in result.output
     assert "invalid" in result.output
+
+
+# --- config -----------------------------------------------------------------
+
+def test_config_json_emits_effective_config():
+    result = CliRunner().invoke(cli, ["config", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    # shape, not machine-specific values (a real user config file may exist)
+    assert set(payload) >= {"db_dir", "db_name", "scan_roots", "ignore"}
+    assert isinstance(payload["scan_roots"], list)
+
+
+def test_config_default_view_shows_file_path():
+    result = CliRunner().invoke(cli, ["config"])
+    assert result.exit_code == 0, result.output
+    assert "config.json" in result.output
+    assert "effective config" in result.output

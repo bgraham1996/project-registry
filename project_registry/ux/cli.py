@@ -13,6 +13,7 @@ the one *write* path and every *read* path as subcommands:
     project-registry show ~/dev/rosmerta           # detail for one watched dir
     project-registry cycles                        # cycle × count rollup
     project-registry doctor                        # metadata-file health report
+    project-registry config                        # show effective config + file location
     project-registry tui [--watch]                 # live rich dashboard
 
 ``scan`` is the only subcommand that mutates the store (it delegates to
@@ -56,7 +57,7 @@ from project_registry.ux.tui import (
 def _default_db_path() -> Path:
     """The registry path from config — same file the scanner and TUI use."""
     config = Configure()
-    config.default()
+    config.load()
     return config.db_path()
 
 
@@ -341,7 +342,7 @@ def doctor(scan_roots, as_json):
     # Reads the project files on disk, not the registry DB (the global --db is not
     # used here); honours the same scan roots + ignore list as `scan`.
     config = Configure()
-    config.default()
+    config.load()
     roots = resolve_roots(config, list(scan_roots) or None)
     scanner = Scanner(repo=None, roots=roots, ignore=config.ignore())
     diagnoses = scanner.diagnose_all()
@@ -352,6 +353,23 @@ def doctor(scan_roots, as_json):
         console = Console()
         console.print(doctor_summary(diagnoses))
         console.print(render_doctor(diagnoses))
+
+
+@cli.command(help="Show the effective configuration and where the config file lives.")
+@click.option("--json", "-j", "as_json", is_flag=True, help="emit just the effective config as JSON.")
+def config(as_json):
+    cfg = Configure()
+    cfg.load()
+    effective = json.dumps(cfg.fig(), indent=2)
+    if as_json:
+        click.echo(effective)
+        return
+    path = cfg.config_file_path()
+    state = "exists" if path.exists() else "not created yet — create it to override"
+    console = Console()
+    console.print(f"[bold]config file:[/] {path} [dim]({state})[/]")
+    console.print("[bold]effective config:[/]")
+    console.print(effective)
 
 
 @cli.command(help="Live rich dashboard view of the registry.")

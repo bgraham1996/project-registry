@@ -22,7 +22,7 @@ views: a Python `rich` TUI (`project_registry/ux/tui.py`), a Python query CLI
 unified behind one installable `project-registry` command (subcommands `scan`/`list`/`show`/`cycles`/`tui`). Remaining empty modules
 (`project_registry/data_models/projects.py`, `session_manager.py`, `project_registry/main.py`) are intentional
 future-direction stubs — **keep them**. Design decisions are recorded as Markdown under
-`project/design/` (eight ADRs exist); keep adding there as decisions land.
+`project/design/` (nine ADRs exist); keep adding there as decisions land.
 
 ## Environment and commands
 
@@ -39,6 +39,7 @@ uv tool install .             # install `project-registry` on PATH (callable any
 project-registry scan         # index projects (the only writer); --scan-root DIR repeatable, overrides config
 project-registry list         # read-only query (list/show/cycles; --git/--cycle/--project; --json/--csv)
 project-registry doctor       # read-only metadata-file health report (missing/empty/invalid/ok + absent fields)
+project-registry config       # show effective config + the config-file path (~/.config/dev-reg/config.json)
 project-registry tui          # read-only rich dashboard (--watch to live-refresh)
 uv run main.py                # dev smoke test: same scan as `project-registry scan`, run from the checkout
 uv run pytest                 # run the test suite (tests/)
@@ -75,9 +76,14 @@ distribution name on PyPI-style metadata is still the hyphenated `project-regist
   is still unit-tested in `tests/test_main.py` (which imports `resolve_roots` re-exported from `main`).
 - `project_registry/` — core library.
   - `project_registry/config_service/cnfg.py` — `Configure`: `default()` seeds `{db_dir: ~/.config/dev-reg,
-    db_name: registry.db, scan_roots: [~/dev], ignore: [archive]}`, `fig()` returns the dict,
-    `db_path()`/`scan_roots()`/`ignore()` return the expanded values. `ignore` = candidate dir names
-    the scanner skips (see scanner below).
+    db_name: registry.db, scan_roots: [~/dev], ignore: [archive]}`; `load(path=None)` seeds defaults
+    then overlays an optional user config file (`config_file_path()` → `~/.config/dev-reg/config.json`)
+    — a present key among `db_dir`/`db_name`/`scan_roots`/`ignore` **replaces** the default (defensive:
+    bad/missing/wrong-typed file or items are ignored). `fig()` returns the dict;
+    `db_path()`/`scan_roots()`/`ignore()` return expanded values. The runtime (`Db`, the CLI's
+    `_default_db_path`, `doctor`) calls `load()`; `default()` is pure defaults (what tests pin). Add
+    nested parents to `scan_roots` to index projects deeper than one level below a root. See
+    `project/design/config-file.md`.
   - `project_registry/cache/cache_manager.py` — `Db`: `init()` ensures the parent dir exists, connects via
     `sqlite3` (creating the file if absent), then runs **`create_tables()` → `_migrate()` →
     `_create_views()`** (order matters: views may reference a migrated-in column like `removed_at`),
@@ -146,7 +152,8 @@ distribution name on PyPI-style metadata is still the hyphenated `project-regist
   - `project_registry/ux/cli.py` — the **`project-registry` command** (`click` group; the single
     console-script entry point in `pyproject.toml`). One command groups every Python surface:
     `scan` (the write path — delegates to `scan.run_scan`), the read commands `list` / `show` /
-    `cycles`, `doctor` (metadata-file health report), and `tui` (delegates to `tui.run`/`tui.watch`).
+    `cycles`, `doctor` (metadata-file health report), `config` (show effective config + file path),
+    and `tui` (delegates to `tui.run`/`tui.watch`).
     The `list`/`show`/`cycles` read commands open the DB `mode=ro` (same read-only contract as the Go
     client) and talk only to `Registry`, so a query can never write; `doctor` reads the project files
     on disk (via `Scanner.diagnose_all`), not the DB. `list` takes `--git` / `--cycle` / `--project`

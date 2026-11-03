@@ -17,7 +17,7 @@ class Db:
 
     def __init__(self):
         self.config = Configure()
-        self.config.default()
+        self.config.load()  # defaults, overlaid by the user config file if present
         self.connection = None
 
     def path(self) -> Path:
